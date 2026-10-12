@@ -270,6 +270,192 @@ export function createPigtailChecker(regions: GeometryRegion[], paths: DivisionP
   };
 }
 
+/** Ordered connections for a snake, strictly within the available pigtails.
+ * Detours count toward the limit; supplementary cable is never accepted. */
+export function createSerpentCableRouter(regions: GeometryRegion[], paths: DivisionPath[], modules: LedPlacement[],
+  measurements: ModuleMeasurements, scale: Scale) {
+  createModuleGeometry(measurements);
+  const surfaces: Region[] = regions.map(region => ({ outer: region.outer.map(p => toMm(p, scale)), inner: null, holes: region.holes.map(hole => hole.map(p => toMm(p, scale))) }));
+  const guides = new Map(paths.map(path => [path.id, makeGuide(path, scale)]));
+  const bodies = new Map(modules.map(module => [module.id, module.corners.map(p => toMm(p, scale))]));
+  const terminals = new Map(modules.flatMap(module => terminalsOf(module, measurements, scale).map(t => [terminalKey(t), t] as const)));
+  const cache = new Map<string, ConnectionLink | null>();
+  const networkAttachments = new Map<string, Array<{ id: number; cost: number }>>();
+  let network: { points: Point[]; origins: string[]; adjacent: Map<number, number[]>; buckets: Map<string, number[]>; radius: number; neighbors: Map<number, number[]> } | null = null;
+  const internalClear = (a: Point, b: Point) => segmentInside(a, b, surfaces) && routeAvoidsBodies([a, b], bodies, '', '');
+  const prepareNetwork = () => {
+    if (network) return network;
+    const points: Point[] = [], origins: string[] = [], keys = new Map<string, number>(), adjacent = new Map<number, number[]>();
+    const radius = Math.max(10, measurements.widthMm * 2, measurements.lengthMm / 2);
+    const add = (p: Point, origin: string) => {
+      if (!insideRegions(p, surfaces) || [...bodies.values()].some(body => insidePolygon(p, body))) return -1;
+      const key = `${p.x.toFixed(5)},${p.y.toFixed(5)}`;
+      const existing = keys.get(key); if (existing !== undefined) return existing;
+      const id = points.length; points.push(p); origins.push(origin); keys.set(key, id); return id;
+    };
+    const join = (a: number, b: number) => { if (a >= 0 && b >= 0 && a !== b) { adjacent.set(a, [...(adjacent.get(a) ?? []), b]); adjacent.set(b, [...(adjacent.get(b) ?? []), a]); } };
+    for (const guide of guides.values()) if (guide) {
+      let previous = -1;
+      for (const point of guide.points) { const id = add(point, guide.path.id); join(previous, id); previous = id; }
+    }
+    // Small detours around the physical bodies reconnect a center guide which
+    // is occupied by an LED; the route still stays inside the figure.
+    for (const [id, corners] of bodies) {
+      const center = midpoint(corners[0], corners[2]);
+      const expanded = corners.map(p => {
+        const dx = p.x - center.x, dy = p.y - center.y;
+        return { x: p.x + dx / Math.hypot(dx, dy) * 1.5, y: p.y + dy / Math.hypot(dx, dy) * 1.5 };
+      });
+      const perimeter = expanded.flatMap((p, i) => [p, midpoint(p, expanded[(i + 1) % 4])]).map(p => add(p, `body-${id}`));
+      for (let i = 0; i < perimeter.length; i++) join(perimeter[i], perimeter[(i + 1) % perimeter.length]);
+    }
+    const buckets = new Map<string, number[]>();
+    points.forEach((p, id) => { const key = `${Math.floor(p.x / radius)},${Math.floor(p.y / radius)}`; buckets.set(key, [...(buckets.get(key) ?? []), id]); });
+    network = { points, origins, adjacent, buckets, radius, neighbors: new Map() }; return network;
+  };
+  const networkRoute = (a: Terminal, b: Terminal): Point[] | null => {
+    const graph = prepareNetwork(), { points, origins, radius, adjacent, buckets, neighbors } = graph;
+    const attach = (terminal: Terminal) => {
+      const key = terminalKey(terminal), known = networkAttachments.get(key); if (known) return known;
+      const result: Array<{ id: number; cost: number }> = [];
+      const candidates = points.map((p, id) => ({ id, cost: distance(p, terminal.mm) })).filter(item => item.cost <= measurements.lengthMm + measurements.widthMm * 2).sort((x, y) => x.cost - y.cost);
+      for (const item of candidates) {
+        if (exitsBody(terminal, points[item.id]) && segmentInside(terminal.mm, points[item.id], surfaces) && routeAvoidsBodies([terminal.mm, points[item.id]], bodies, terminal.module.id, '')) result.push(item);
+        if (result.length === 8) break;
+      }
+      networkAttachments.set(key, result); return result;
+    };
+    const starts = attach(a), goals = new Map(attach(b).map(item => [item.id, item.cost]));
+    if (!starts.length || !goals.size) return null;
+    const connections = (id: number) => {
+      const known = neighbors.get(id); if (known) return known;
+      const p = points[id], x = Math.floor(p.x / radius), y = Math.floor(p.y / radius), candidates = new Set(adjacent.get(id) ?? []);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const next of buckets.get(`${x + dx},${y + dy}`) ?? []) if (next !== id && distance(p, points[next]) <= radius) candidates.add(next);
+      const byOrigin = new Map<string, number>(), result: number[] = [];
+      for (const next of [...candidates].sort((x, y) => distance(p, points[x]) - distance(p, points[y]))) {
+        const origin = origins[next], count = byOrigin.get(origin) ?? 0;
+        if (!(adjacent.get(id) ?? []).includes(next) && count >= (origin.startsWith('body-') ? 4 : 2)) continue;
+        if (!internalClear(p, points[next])) continue;
+        result.push(next); byOrigin.set(origin, count + 1);
+        if (result.length >= 24) break;
+      }
+      neighbors.set(id, result); return result;
+    };
+    const costs = new Float64Array(points.length).fill(Infinity), priorities = new Float64Array(points.length).fill(Infinity), previous = new Int32Array(points.length).fill(-1);
+    const open = new Set<number>();
+    for (const start of starts) { costs[start.id] = start.cost; priorities[start.id] = start.cost + distance(points[start.id], b.mm); open.add(start.id); }
+    let end = -1, best = Infinity;
+    while (open.size) {
+      let current = -1, score = Infinity;
+      for (const id of open) if (priorities[id] < score) { score = priorities[id]; current = id; }
+      if (current < 0 || score >= best) break;
+      open.delete(current);
+      const finish = goals.get(current);
+      if (finish !== undefined && costs[current] + finish < best) { best = costs[current] + finish; end = current; }
+      for (const next of connections(current)) {
+        const cost = costs[current] + distance(points[current], points[next]);
+        if (cost >= costs[next]) continue;
+        costs[next] = cost; priorities[next] = cost + distance(points[next], b.mm); previous[next] = current; open.add(next);
+      }
+    }
+    if (end < 0) return null;
+    const route = [b.mm];
+    for (let id = end; id >= 0; id = previous[id]) route.push(points[id]);
+    route.push(a.mm); return route.reverse();
+  };
+  let grid: { mask: Uint8Array; columns: number; rows: number; cell: number; minX: number; minY: number } | null = null;
+  const prepareGrid = () => {
+    if (grid) return grid;
+    const points = surfaces.flatMap(region => region.outer);
+    const minX = Math.min(...points.map(p => p.x)), maxX = Math.max(...points.map(p => p.x));
+    const minY = Math.min(...points.map(p => p.y)), maxY = Math.max(...points.map(p => p.y));
+    const cell = Math.max(0.75, Math.min(2, measurements.widthMm / 8), Math.sqrt((maxX - minX) * (maxY - minY) / 300000));
+    const columns = Math.ceil((maxX - minX) / cell) + 1, rows = Math.ceil((maxY - minY) / cell) + 1;
+    const mask = new Uint8Array(columns * rows);
+    for (let y = 0; y < rows; y++) for (let x = 0; x < columns; x++) mask[y * columns + x] = Number(insideRegions({ x: minX + x * cell, y: minY + y * cell }, surfaces));
+    // Only visit each body's bounding cells, instead of all bodies per pixel.
+    for (const corners of bodies.values()) {
+      const center = midpoint(corners[0], corners[2]);
+      const length = distance(corners[0], corners[1]), width = distance(corners[0], corners[3]);
+      const tx = (corners[1].x - corners[0].x) / length, ty = (corners[1].y - corners[0].y) / length;
+      const nx = (corners[3].x - corners[0].x) / width, ny = (corners[3].y - corners[0].y) / width;
+      const x0 = Math.max(0, Math.floor((Math.min(...corners.map(p => p.x)) - minX - 0.4) / cell));
+      const x1 = Math.min(columns - 1, Math.ceil((Math.max(...corners.map(p => p.x)) - minX + 0.4) / cell));
+      const y0 = Math.max(0, Math.floor((Math.min(...corners.map(p => p.y)) - minY - 0.4) / cell));
+      const y1 = Math.min(rows - 1, Math.ceil((Math.max(...corners.map(p => p.y)) - minY + 0.4) / cell));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const dx = minX + x * cell - center.x, dy = minY + y * cell - center.y;
+        if (Math.abs(dx * tx + dy * ty) <= length / 2 + 0.3 && Math.abs(dx * nx + dy * ny) <= width / 2 + 0.3) mask[y * columns + x] = 0;
+      }
+    }
+    grid = { mask, columns, rows, cell, minX, minY }; return grid;
+  };
+  const rasterRoute = (a: Terminal, b: Terminal): Point[] | null => {
+    const { mask, columns, rows, cell, minX, minY } = prepareGrid();
+    const point = (id: number) => ({ x: minX + (id % columns) * cell, y: minY + Math.floor(id / columns) * cell });
+    const attachments = (terminal: Terminal) => {
+      const cx = Math.round((terminal.mm.x - minX) / cell), cy = Math.round((terminal.mm.y - minY) / cell);
+      const candidates: Array<{ id: number; cost: number }> = [];
+      for (let y = Math.max(0, cy - 4); y <= Math.min(rows - 1, cy + 4); y++) for (let x = Math.max(0, cx - 4); x <= Math.min(columns - 1, cx + 4); x++) {
+        const id = y * columns + x, p = point(id);
+        if (mask[id] && exitsBody(terminal, p) && segmentInside(terminal.mm, p, surfaces) && routeAvoidsBodies([terminal.mm, p], bodies, terminal.module.id, '')) candidates.push({ id, cost: distance(terminal.mm, p) });
+      }
+      return candidates.sort((first, second) => first.cost - second.cost).slice(0, 12);
+    };
+    const starts = attachments(a), goals = new Map(attachments(b).map(item => [item.id, item.cost]));
+    if (!starts.length || !goals.size) return null;
+    const costs = new Float64Array(mask.length).fill(Infinity), previous = new Int32Array(mask.length).fill(-1);
+    const heap: Array<{ id: number; priority: number }> = [];
+    const push = (item: { id: number; priority: number }) => { heap.push(item); let i = heap.length - 1; while (i > 0) { const parent = (i - 1) >> 1; if (heap[parent].priority <= item.priority) break; heap[i] = heap[parent]; i = parent; } heap[i] = item; };
+    const pop = () => { const first = heap[0], last = heap.pop()!; if (heap.length) { let i = 0; while (i * 2 + 1 < heap.length) { let child = i * 2 + 1; if (child + 1 < heap.length && heap[child + 1].priority < heap[child].priority) child++; if (heap[child].priority >= last.priority) break; heap[i] = heap[child]; i = child; } heap[i] = last; } return first; };
+    for (const start of starts) { costs[start.id] = start.cost; push({ id: start.id, priority: start.cost + distance(point(start.id), b.mm) }); }
+    let end = -1, best = Infinity;
+    while (heap.length) {
+      const current = pop();
+      if (current.priority >= best) break;
+      const finish = goals.get(current.id);
+      if (finish !== undefined && costs[current.id] + finish < best) { best = costs[current.id] + finish; end = current.id; }
+      const x = current.id % columns, y = Math.floor(current.id / columns);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+        const nx = x + dx, ny = y + dy, id = ny * columns + nx;
+        if (nx < 0 || nx >= columns || ny < 0 || ny >= rows || !mask[id] || (dx && dy && (!mask[y * columns + nx] || !mask[ny * columns + x]))) continue;
+        const nextCost = costs[current.id] + Math.hypot(dx, dy) * cell;
+        if (nextCost >= costs[id]) continue;
+        costs[id] = nextCost; previous[id] = current.id;
+        push({ id, priority: nextCost + distance(point(id), b.mm) });
+      }
+    }
+    if (end < 0) return null;
+    const route: Point[] = [b.mm];
+    for (let id = end; id >= 0; id = previous[id]) route.push(point(id));
+    route.push(a.mm); route.reverse();
+    const safeSegment = (i: number, j: number) => (i !== 0 || exitsBody(a, route[j])) && (j !== route.length - 1 || exitsBody(b, route[i])) &&
+      segmentInside(route[i], route[j], surfaces) && routeAvoidsBodies([route[i], route[j]], bodies, i === 0 ? a.module.id : '', j === route.length - 1 ? b.module.id : '');
+    const simplified = [route[0]];
+    for (let i = 0; i < route.length - 1;) {
+      let next = i + 1;
+      for (let j = route.length - 1; j > i; j--) if (safeSegment(i, j)) { next = j; break; }
+      if (!safeSegment(i, next)) return null;
+      simplified.push(route[next]); i = next;
+    }
+    return simplified;
+  };
+  return (first: LedPlacement, fromSide: TerminalSide, second: LedPlacement, toSide: TerminalSide): ConnectionLink | null => {
+    if (!surfaces.length) return null;
+    const key = `${first.id}:${fromSide}>${second.id}:${toSide}`;
+    if (cache.has(key)) return cache.get(key)!;
+    const a = terminals.get(`${first.id}:${fromSide}`)!, b = terminals.get(`${second.id}:${toSide}`)!;
+    const limit = Math.min(a.availableMm + b.availableMm, measurements.leftPigtailMm + measurements.rightPigtailMm);
+    if (distance(a.mm, b.mm) > limit + 1e-6) { cache.set(key, null); return null; }
+    const guide = first.divisionId === second.divisionId ? guides.get(first.divisionId) ?? undefined : undefined;
+    const withinReach = (route: Point[] | null) => route && routeLength(route) <= limit + 1e-6 ? route : null;
+    const route = withinReach(terminalPairRoute(a, b, surfaces, guide, bodies)) ?? withinReach(networkRoute(a, b)) ?? withinReach(rasterRoute(a, b));
+    const lengthMm = route ? routeLength(route) : 0;
+    const result = route ? asLink({ a, b, routeMm: route, lengthMm, bridgeLengthMm: 0 }, cache.size, scale) : null;
+    cache.set(key, result); return result;
+  };
+}
+
 class Forest {
   private parent = new Map<string, string>();
   readonly used = new Set<string>();
@@ -301,16 +487,15 @@ function asLink(candidate: Candidate, index: number, scale: Scale): ConnectionLi
   const kind: ConnectionKind = candidate.bridgeLengthMm > 1e-6 ? 'bridge' : 'pigtail';
   const fromUsed = Math.min(candidate.a.availableMm, candidate.lengthMm);
   const toUsed = kind === 'pigtail' ? candidate.lengthMm - fromUsed : Math.min(candidate.b.availableMm, candidate.lengthMm - fromUsed);
-  const bridgeSegment: [Point, Point] | null = kind === 'bridge' ? [
-    toSvg({
-      x: candidate.a.mm.x + (candidate.b.mm.x - candidate.a.mm.x) * candidate.a.availableMm / candidate.lengthMm,
-      y: candidate.a.mm.y + (candidate.b.mm.y - candidate.a.mm.y) * candidate.a.availableMm / candidate.lengthMm,
-    }, scale),
-    toSvg({
-      x: candidate.b.mm.x + (candidate.a.mm.x - candidate.b.mm.x) * candidate.b.availableMm / candidate.lengthMm,
-      y: candidate.b.mm.y + (candidate.a.mm.y - candidate.b.mm.y) * candidate.b.availableMm / candidate.lengthMm,
-    }, scale),
-  ] : null;
+  const atDistance = (target: number): Point => {
+    for (let i = 1; i < candidate.routeMm.length; i++) {
+      const a = candidate.routeMm[i - 1], b = candidate.routeMm[i], length = distance(a, b);
+      if (target <= length) { const t = length ? target / length : 0; return toSvg({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, scale); }
+      target -= length;
+    }
+    return toSvg(candidate.routeMm.at(-1)!, scale);
+  };
+  const bridgeSegment: [Point, Point] | null = kind === 'bridge' ? [atDistance(candidate.a.availableMm), atDistance(candidate.lengthMm - candidate.b.availableMm)] : null;
   return {
     id: `link-${index + 1}`, kind,
     fromId: candidate.a.module.id, toId: candidate.b.module.id,

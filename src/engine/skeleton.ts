@@ -174,10 +174,11 @@ function vectorize(region: GeometryRegion, scale: GeometryScale, step: number): 
   return { nodes: nodes.filter(n => n.kind === 'point' || referenced.has(n.id)), edges };
 }
 
-export function generateSkeleton(model: SvgModel, physicalSize?: { widthMm: number; heightMm: number }): SkeletonResult {
+export function generateSkeleton(model: SvgModel, physicalSize?: { widthMm: number; heightMm: number }, prepared?: ReturnType<typeof buildRegions>): SkeletonResult {
   if (physicalSize && ![physicalSize.widthMm, physicalSize.heightMm].every(n => Number.isFinite(n) && n > 0)) throw new Error('Las medidas físicas deben ser positivas.');
   const scale = physicalSize ? { x: physicalSize.widthMm / model.viewBox.width, y: physicalSize.heightMm / model.viewBox.height } : { x: 1, y: 1 };
-  const { regions, warnings } = buildRegions(model.figures);
+  const geometry = prepared ?? buildRegions(model.figures);
+  const regions = geometry.regions, warnings = [...geometry.warnings];
   const nodes: SkeletonNode[] = [], edges: SkeletonEdge[] = [];
   let resolution = 0;
   for (const original of regions) {

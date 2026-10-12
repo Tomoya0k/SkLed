@@ -3,8 +3,9 @@ import type { SkeletonEdge, SkeletonResult } from './skeleton';
 import type { GeometryRegion } from './regions';
 import { pathData, pointDistance, regionContains, scaleRegion, segmentsCross, transverseSection, unscalePoint } from './regions';
 import type { Point } from './types';
+import { filterPartitionsForBody } from './partition-fit';
 
-export interface PartitionConfig { moduleWidthMm: number; freeGapMm: number; edgeMarginMm: number; maxLanes: 1 | 2 }
+export interface PartitionConfig { moduleWidthMm: number; freeGapMm: number; edgeMarginMm: number; maxLanes: 1 | 2; moduleLengthMm?: number }
 export interface PartitionPath extends DivisionPath { regionId: string; sourceEdgeId: string; sourceRange: [number, number]; lane: -1 | 0 | 1; closed: boolean; points: Point[] }
 export interface PartitionResult extends DivisionResult { paths: PartitionPath[]; regions: GeometryRegion[]; requiredWidthMm: number }
 interface Sample { at: number; center: Point; left: Point; right: Point; doubled: boolean }
@@ -26,6 +27,7 @@ function polyline(edge: SkeletonEdge) {
 
 /** Independent open/closed lanes. No connector is ever generated at a change in lane count. */
 export function generatePartitions(skeleton: SkeletonResult, config: PartitionConfig): PartitionResult {
+  if (config.moduleLengthMm !== undefined && !(Number.isFinite(config.moduleLengthMm) && config.moduleLengthMm > 0)) throw new Error('El largo del módulo debe ser mayor que cero.');
   if (!(Number.isFinite(config.moduleWidthMm) && config.moduleWidthMm > 0) || ![config.freeGapMm, config.edgeMarginMm].every(n => Number.isFinite(n) && n >= 0) || ![1, 2].includes(config.maxLanes)) throw new Error('Revisa ancho, separación, margen y máximo de recorridos.');
   const requiredWidthMm = 2 * config.moduleWidthMm + config.freeGapMm + 2 * config.edgeMarginMm;
   const result: PartitionResult = { paths: [], regions: skeleton.regions, requiredWidthMm, pairs: 0, warnings: [...skeleton.warnings] };
@@ -33,7 +35,7 @@ export function generatePartitions(skeleton: SkeletonResult, config: PartitionCo
   const fallbacks = new Map<string, PartitionPath>();
   if (skeleton.units !== 'mm') { result.warnings.push('Indica ancho y alto físicos del SVG para generar Partidas.'); return result; }
   const nodes = new Map(skeleton.nodes.map(n => [n.id, n]));
-  const spacing = Math.max(0.25, Math.min(1, skeleton.resolution * 2));
+  const spacing = config.moduleLengthMm ? Math.max(0.5, Math.min(2, config.moduleLengthMm / 30)) : Math.max(0.25, Math.min(1, skeleton.resolution * 2));
   for (const edge of skeleton.edges) {
     const sourceRegion = skeleton.regions.find(r => r.id === edge.regionId)!;
     const region = scaleRegion(sourceRegion, skeleton.scale);
@@ -66,6 +68,16 @@ export function generatePartitions(skeleton: SkeletonResult, config: PartitionCo
         const half = config.moduleWidthMm / 2 + Math.max(0, config.edgeMarginMm - 1e-5);
         if (!regionContains({ x: p.x + normal.x * sign * half, y: p.y + normal.y * sign * half }, region)) doubled = false;
       }
+      // A wide cross-section is insufficient at a spike or bend: the entire
+      // physical body, including its edge margin, must fit along each lane.
+      if (doubled && config.moduleLengthMm && magnitude > 1e-8) {
+        const tangent = { x: tx / magnitude, y: ty / magnitude };
+        const halfLength = config.moduleLengthMm / 2 + config.edgeMarginMm;
+        const halfWidth = config.moduleWidthMm / 2 + config.edgeMarginMm;
+        for (const p of [left, right]) for (const along of [-halfLength, 0, halfLength]) for (const across of [-halfWidth, halfWidth]) {
+          if (!regionContains({ x: p.x + tangent.x * along + normal.x * across, y: p.y + tangent.y * along + normal.y * across }, region)) doubled = false;
+        }
+      }
       return { at, center, left, right, doubled };
     });
     const segmentCount = edge.closed ? samples.length : samples.length - 1;
@@ -85,6 +97,24 @@ export function generatePartitions(skeleton: SkeletonResult, config: PartitionCo
         if (!doubleSegments[j] || (edge.closed && i === 0 && j === segmentCount - 1)) continue;
         const c = samples[j], d = samples[(j + 1) % samples.length];
         if (segmentsCross(a.left, b.left, c.left, d.left) || segmentsCross(a.right, b.right, c.right, d.right) || segmentsCross(a.left, b.left, c.right, d.right) || segmentsCross(a.right, b.right, c.left, d.left)) doubleSegments[i] = doubleSegments[j] = false;
+      }
+    }
+    // Short alternating paired islands cannot support a complete LED body.
+    // Preserve one continuous skeleton span there rather than fragmented lanes.
+    if (config.moduleLengthMm) {
+      const visited = new Set<number>();
+      for (let i = 0; i < segmentCount; i++) {
+        if (!doubleSegments[i] || visited.has(i)) continue;
+        const run = [i]; visited.add(i);
+        for (const direction of [-1, 1]) {
+          let j = i + direction;
+          while (edge.closed || (j >= 0 && j < segmentCount)) {
+            const index = (j % segmentCount + segmentCount) % segmentCount;
+            if (!doubleSegments[index] || visited.has(index)) break;
+            visited.add(index); run.push(index); j += direction;
+          }
+        }
+        if (run.length * step < config.moduleLengthMm) for (const index of run) doubleSegments[index] = false;
       }
     }
     const emit = (indices: number[], doubled: boolean, closed: boolean) => {
@@ -138,6 +168,7 @@ export function generatePartitions(skeleton: SkeletonResult, config: PartitionCo
     downgraded += conflicts.size;
   }
   if (downgraded) result.warnings.push(`${downgraded} tramo(s) conservan el eje central para evitar cruces entre partidas.`);
+  result.paths = filterPartitionsForBody(result.paths, result.regions, skeleton.scale, config);
   result.pairs = result.paths.filter(p => p.lane === -1).length;
   return result;
 }

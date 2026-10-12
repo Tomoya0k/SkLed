@@ -131,21 +131,21 @@ test('multiple holes share region validation and scaling happens before width an
 test('module settings leave the visible skeleton unchanged without a partition layer', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('Cargar archivo SVG').setInputFiles({ name:'franja.svg',mimeType:'image/svg+xml',buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 60" width="300mm" height="60mm"><rect width="300" height="60"/></svg>') });
-  await expect(page.getByRole('group',{name:'Capas principales'}).getByRole('checkbox')).toHaveCount(4);
+  await expect(page.getByRole('group',{name:'Capas principales'}).getByRole('checkbox')).toHaveCount(5);
   await page.getByRole('checkbox',{name:'SKELETON',exact:true}).check();
   await expect(page.locator('[data-skeleton-edge]').first()).toBeVisible();
   const skeleton = await page.locator('[data-skeleton-edge]').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('d')));
-  await page.getByLabel('Largo del módulo').fill('12');
-  await page.getByLabel('Ancho del módulo').fill('15');
-  await page.getByLabel('Pigtail izquierdo').fill('4');
-  await page.getByLabel('Pigtail derecho').fill('4');
+  await page.getByLabel('Largo del módulo').fill('1.2');
+  await page.getByLabel('Ancho del módulo').fill('1.5');
+  await page.getByLabel('Pigtail izquierdo').fill('0.4');
+  await page.getByLabel('Pigtail derecho').fill('0.4');
   await page.getByRole('checkbox',{name:'MÓDULOS LED',exact:true}).check();
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
   await page.getByLabel('Máximo de recorridos').selectOption('1');
   await page.getByLabel('Máximo de recorridos').selectOption('2');
-  await page.getByLabel('Pigtail izquierdo').fill('45');
+  await page.getByLabel('Pigtail izquierdo').fill('4.5');
   expect(await page.locator('[data-skeleton-edge]').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('d')))).toEqual(skeleton);
-  await page.getByLabel('Margen objetivo al borde').fill('20');
+  await page.getByLabel('Margen objetivo al borde').fill('2');
   await expect(page.locator('[data-partition]')).toHaveCount(0);
   await page.getByRole('checkbox',{name:'SKELETON',exact:true}).uncheck();
   await expect(page.locator('[data-skeleton-edge]')).toHaveCount(0);

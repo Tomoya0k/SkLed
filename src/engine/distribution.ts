@@ -2,6 +2,7 @@ import type { DivisionPath, DivisionResult } from './divisions';
 import { createModuleGeometry } from './module';
 import type { ModuleMeasurements } from './module';
 import type { Point, SvgModel } from './types';
+import { pathData } from './regions';
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -9,6 +10,9 @@ export interface LedPlacement {
   id: string;
   figureId: string;
   divisionId: string;
+  regionId?: string;
+  positionMm?: number;
+  rowRunId?: string;
   number: number;
   figureNumber: number;
   center: Point;
@@ -31,6 +35,15 @@ export interface LedDistributionResult {
   byFigure: FigureDistribution[];
   total: number;
   unplaced: number;
+  rowBreaks?: Array<{ divisionId: string; fromId: string; toId: string; gapMm: number }>;
+  routeRuns?: Array<{ id: string; divisionId: string; regionId?: string; figureId: string; d: string; moduleIds: string[] }>;
+}
+
+export interface PlacementOptions {
+  minimumGapMm?: number;
+  maximumGapMm?: number;
+  bodyGapMm?: number;
+  edgeMarginMm?: number;
 }
 
 export interface PhysicalScale { x: number; y: number }
@@ -55,7 +68,7 @@ export function pathPolyline(path: DivisionPath, scale: PhysicalScale): Polyline
   return distances.at(-1)! > 0 ? { points, distances, length: distances.at(-1)!, closed } : null;
 }
 
-function pointAt(polyline: Polyline, distanceMm: number): Point {
+export function pointAt(polyline: Polyline, distanceMm: number): Point {
   const target = polyline.closed ? ((distanceMm % polyline.length) + polyline.length) % polyline.length : Math.max(0, Math.min(polyline.length, distanceMm));
   let low = 0, high = polyline.distances.length - 1;
   while (low + 1 < high) {
@@ -167,8 +180,23 @@ function overlaps(a: Rectangle, b: Rectangle): boolean {
   return true;
 }
 
+/** Minimum physical distance between oriented bodies, including overlap/contact. */
+export function rectangleGap(a: Rectangle, b: Rectangle): number {
+  if (overlaps(a, b)) return 0;
+  const pointSegment = (p: Point, start: Point, end: Point) => {
+    const dx = end.x - start.x, dy = end.y - start.y;
+    const t = Math.max(0, Math.min(1, ((p.x - start.x) * dx + (p.y - start.y) * dy) / (dx * dx + dy * dy || 1)));
+    return distance(p, { x: start.x + t * dx, y: start.y + t * dy });
+  };
+  let gap = Infinity;
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+    gap = Math.min(gap, pointSegment(a.corners[i], b.corners[j], b.corners[(j + 1) % 4]), pointSegment(b.corners[j], a.corners[i], a.corners[(i + 1) % 4]));
+  }
+  return gap;
+}
+
 /** Provisional placement on existing division paths; no electrical connection is inferred. */
-export function distributeLeds(model: SvgModel, divisions: DivisionResult, measurements: ModuleMeasurements, widthMm: number, heightMm: number): LedDistributionResult {
+export function distributeLeds(model: SvgModel, divisions: DivisionResult, measurements: ModuleMeasurements, widthMm: number, heightMm: number, options: PlacementOptions = {}): LedDistributionResult {
   const geometry = createModuleGeometry(measurements);
   if (![widthMm, heightMm].every(value => Number.isFinite(value) && value > 0)) throw new Error('Indica el ancho y el alto físicos del SVG.');
   const scale = { x: widthMm / model.viewBox.width, y: heightMm / model.viewBox.height };
@@ -185,13 +213,23 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
   const byFigure = model.figures.map(figure => ({ figureId: figure.id, name: figure.name, placed: 0, unplaced: 0 }));
   const stats = new Map(byFigure.map(item => [item.figureId, item]));
   const modules: LedPlacement[] = [];
-  const rectangles: Rectangle[] = [];
+  const placed: Array<{ rectangle: Rectangle; division: DivisionPath }> = [];
+  const rowBreaks: NonNullable<LedDistributionResult['rowBreaks']> = [];
+  const routeRuns: NonNullable<LedDistributionResult['routeRuns']> = [];
   const lengthMm = geometry.body.lengthMm, bodyWidthMm = geometry.widthMm;
   // A conservative gap estimate: each side must be long enough on its own.
   // Do not add both pigtails or infer a valid electrical connection.
   const gapBudgetMm = Math.min(geometry.leftPigtail.lengthMm, geometry.rightPigtail.lengthMm);
-  const clearance = Math.min(0.2, bodyWidthMm * 0.05);
-  for (const division of divisions.paths) {
+  const minimumGap = options.minimumGapMm ?? 0;
+  const maximumGap = options.maximumGapMm ?? Infinity;
+  const bodyGap = options.bodyGapMm ?? 0;
+  const clearance = options.edgeMarginMm ?? Math.min(0.2, bodyWidthMm * 0.05);
+  if (![minimumGap, bodyGap, clearance].every(n => Number.isFinite(n) && n >= 0) || !(maximumGap >= minimumGap)) throw new Error('Revisa la separación mínima, máxima y el margen de los módulos.');
+  const desiredGap = Math.max(minimumGap, Math.min(maximumGap, gapBudgetMm));
+  // Fit the central terminal branches first so a paired lane cannot crowd a tip.
+  const lane = (path: DivisionPath) => (path as DivisionPath & { lane?: number }).lane;
+  const paths = [...divisions.paths].sort((a, b) => Number(!!lane(a)) - Number(!!lane(b)));
+  for (const division of paths) {
     const stat = stats.get(division.figureId);
     if (!stat) continue;
     const route = pathPolyline(division, scale);
@@ -200,37 +238,82 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
     const region: Region = sourceRegion ? { outer: sourceRegion.outer.map(p => toMm(p, scale)), inner: null,
       holes: sourceRegion.holes.map(hole => hole.map(p => toMm(p, scale))) } :
       { outer: polygon(division.outerContourId), inner: division.innerContourId ? polygon(division.innerContourId) : null };
-    const maxBodies = Math.floor(route.length / lengthMm);
-    if (!maxBodies) { stat.unplaced++; continue; }
-    const desired = route.closed
-      ? Math.ceil(route.length / (lengthMm + gapBudgetMm))
-      : Math.ceil((route.length + gapBudgetMm) / (lengthMm + gapBudgetMm));
-    const slots = Math.min(maxBodies, Math.max(1, desired));
+    // Floor preserves the desired gap. Ceil compressed a row below its own
+    // pigtail spacing; independent slot shifts then compressed it further.
+    const slots = Math.max(1, Math.floor((route.length + (route.closed ? 0 : desiredGap)) / (lengthMm + desiredGap)));
     const pitch = route.closed ? route.length / slots : slots > 1 ? (route.length - lengthMm) / (slots - 1) : route.length;
-    for (let slot = 0; slot < slots; slot++) {
-      const base = route.closed ? (slot + 0.5) * pitch : slots === 1 ? route.length / 2 : lengthMm / 2 + slot * pitch;
-      let accepted: Rectangle | null = null;
-      for (const shift of [0, -0.12, 0.12, -0.24, 0.24, -0.36, 0.36]) {
-        const position = base + shift * pitch;
-        if (!route.closed && (position < lengthMm / 2 || position > route.length - lengthMm / 2)) continue;
-        const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
-        if (!candidate || !insideRegion(candidate, region, clearance) || rectangles.some(other => overlaps(candidate, other))) continue;
-        accepted = candidate;
-        break;
+    const fitsGuide = (position: number) => route.closed || (division.bodyFiltered
+      ? position >= lengthMm / 2 - 1e-6 && position <= route.length - lengthMm / 2 + 1e-6
+      : position >= 0 && position <= route.length);
+    const sameRow = (a: Rectangle, b: Rectangle, other: DivisionPath) => {
+      if (division.id === other.id) return true;
+      const dx = a.center.x - b.center.x, dy = a.center.y - b.center.y;
+      return Math.abs(a.tangent.x * b.tangent.x + a.tangent.y * b.tangent.y) > 0.85 && Math.abs(dx * a.tangent.y - dy * a.tangent.x) < bodyWidthMm * 0.9;
+    };
+    type Proposal = { rectangle: Rectangle; position: number };
+    const valid = (candidate: Rectangle, local: Proposal[]) => insideRegion(candidate, region, clearance) &&
+      !placed.some(other => overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < (sameRow(candidate, other.rectangle, other.division) ? Math.max(bodyGap, minimumGap) : bodyGap)) &&
+      !local.some(other => overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < Math.max(bodyGap, minimumGap));
+    let best: Proposal[] = [];
+    for (const phase of [0, 0.15, -0.15]) {
+      const proposals: Proposal[] = [];
+      for (let slot = 0; slot < slots; slot++) {
+        const base = (route.closed ? (slot + 0.5) * pitch : slots === 1 ? route.length / 2 : lengthMm / 2 + slot * pitch) + phase * pitch;
+        for (const shift of [0, -0.12, 0.12, -0.24, 0.24, -0.36, 0.36, -0.5, 0.5]) {
+          const rawPosition = base + shift * pitch;
+          const position = route.closed ? (rawPosition % route.length + route.length) % route.length : rawPosition;
+          // Filtered partitions cannot reintroduce bodies extending beyond a
+          // short guide. Legacy guides retain their original placement rules.
+          if (!fitsGuide(position)) continue;
+          const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
+          if (candidate && valid(candidate, proposals)) { proposals.push({ rectangle: candidate, position }); break; }
+        }
       }
-      if (!accepted) { stat.unplaced++; continue; }
-      rectangles.push(accepted);
+      if (proposals.length > best.length) best = proposals;
+      if (best.length === slots) break;
+    }
+    best.sort((a, b) => a.position - b.position);
+    // Repair a skipped slot where another physical body can bridge the gap.
+    for (let i = 1; i < best.length; i++) {
+      const gap = Math.max(rectangleGap(best[i - 1].rectangle, best[i].rectangle), best[i].position - best[i - 1].position - lengthMm);
+      if (gap <= maximumGap + 1e-5) continue;
+      const before = best[i - 1], after = best[i];
+      let repaired = false;
+      for (const [item, direction] of [[after, -1], [before, 1]] as const) {
+        const position = item.position + direction * (gap - maximumGap + 1);
+        if (!fitsGuide(position)) continue;
+        const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
+        if (!candidate || !valid(candidate, best.filter(other => other !== item))) continue;
+        item.position = position; item.rectangle = candidate;
+        if (Math.max(rectangleGap(before.rectangle, after.rectangle), after.position - before.position - lengthMm) <= maximumGap + 1e-5) { repaired = true; break; }
+      }
+      if (repaired) continue;
+      const positions = [(before.position + after.position) / 2, before.position + lengthMm + desiredGap, after.position - lengthMm - desiredGap];
+      for (let at = before.position + lengthMm + minimumGap; at <= after.position - lengthMm - minimumGap; at += Math.max(1, bodyWidthMm / 3)) positions.push(at);
+      for (const position of positions) {
+        if (!fitsGuide(position)) continue;
+        const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
+        if (candidate && valid(candidate, best)) { best.splice(i, 0, { rectangle: candidate, position }); i--; break; }
+      }
+    }
+    best.sort((a, b) => a.position - b.position);
+    stat.unplaced += Math.max(0, slots - best.length);
+    const rowModules: LedPlacement[] = [];
+    for (const [slot, proposal] of best.entries()) {
+      const accepted = proposal.rectangle;
+      placed.push({ rectangle: accepted, division });
       stat.placed++;
       const forward = (fraction: number): Point => ({
-        x: accepted!.center.x + accepted!.tangent.x * lengthMm * fraction,
-        y: accepted!.center.y + accepted!.tangent.y * lengthMm * fraction,
+        x: accepted.center.x + accepted.tangent.x * lengthMm * fraction,
+        y: accepted.center.y + accepted.tangent.y * lengthMm * fraction,
       });
       const offset = (point: Point, amount: number): Point => ({ x: point.x + accepted!.normal.x * amount, y: point.y + accepted!.normal.y * amount });
       const tip = offset(forward(0.38), -bodyWidthMm * 0.2);
       const arrowSize = Math.min(bodyWidthMm * 0.19, lengthMm * 0.07);
       const arrowBase = { x: tip.x - accepted.tangent.x * arrowSize, y: tip.y - accepted.tangent.y * arrowSize };
-      modules.push({
+      const module: LedPlacement = {
         id: `${division.id}-${slot}`, figureId: division.figureId, divisionId: division.id,
+        regionId: division.regionId, positionMm: proposal.position,
         number: modules.length + 1, figureNumber: stat.placed,
         center: toSvg(accepted.center, scale),
         corners: accepted.corners.map(point => toSvg(point, scale)) as [Point, Point, Point, Point],
@@ -238,8 +321,25 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
         directionEnd: toSvg(tip, scale),
         arrow: [tip, offset(arrowBase, arrowSize * 0.55), offset(arrowBase, -arrowSize * 0.55)].map(point => toSvg(point, scale)) as [Point, Point, Point],
         labelPoint: toSvg(offset(accepted.center, bodyWidthMm * 0.23), scale),
-      });
+      };
+      modules.push(module); rowModules.push(module);
+    }
+    const runs: number[][] = best.length ? [[0]] : [];
+    for (let i = 1; i < best.length; i++) {
+      const gapMm = Math.max(rectangleGap(best[i - 1].rectangle, best[i].rectangle), best[i].position - best[i - 1].position - lengthMm);
+      if (gapMm > maximumGap + 1e-5) { rowBreaks.push({ divisionId: division.id, fromId: rowModules[i - 1].id, toId: rowModules[i].id, gapMm }); runs.push([]); }
+      runs.at(-1)!.push(i);
+    }
+    const seamGap = route.closed && best.length > 1 ? Math.max(rectangleGap(best.at(-1)!.rectangle, best[0].rectangle), route.length + best[0].position - best.at(-1)!.position - lengthMm) : Infinity;
+    for (const [runIndex, indices] of runs.entries()) {
+      const id = `${division.id}-run-${runIndex}`;
+      const first = best[indices[0]].position, last = best[indices.at(-1)!].position;
+      const from = Math.max(0, first - lengthMm / 2), to = Math.min(route.length, last + lengthMm / 2);
+      const points = [pointAt(route, from), ...route.points.filter((_, i) => route.distances[i] > from && route.distances[i] < to), pointAt(route, to)].map(p => toSvg(p, scale));
+      for (const i of indices) rowModules[i].rowRunId = id;
+      routeRuns.push({ id, divisionId: division.id, regionId: division.regionId, figureId: division.figureId,
+        d: route.closed && best.length > 1 && runs.length === 1 && seamGap <= maximumGap + 1e-5 ? division.d : pathData(points), moduleIds: indices.map(i => rowModules[i].id) });
     }
   }
-  return { modules, byFigure, total: modules.length, unplaced: byFigure.reduce((sum, figure) => sum + figure.unplaced, 0) };
+  return { modules, byFigure, total: modules.length, unplaced: byFigure.reduce((sum, figure) => sum + figure.unplaced, 0), rowBreaks, routeRuns };
 }

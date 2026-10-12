@@ -11,6 +11,8 @@ export interface DivisionPath {
   innerContourId: string;
   index: number;
   fraction: number;
+  /** Body-fit filtered guides require the whole module span within the guide. */
+  bodyFiltered?: boolean;
   /** Numerically traced line between both source boundaries, in SVG units. */
   d: string;
 }
@@ -20,6 +22,7 @@ export interface DivisionResult {
   paths: DivisionPath[];
   pairs: number;
   warnings: string[];
+  routingPaths?: DivisionPath[];
 }
 
 interface SampledContour {
