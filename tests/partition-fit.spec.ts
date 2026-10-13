@@ -45,7 +45,7 @@ test('body filter preserves a usable closed guide across its seam', async ({ pag
     const { parseSvg, generateSkeleton, generatePartitions } = await import(enginePath);
     const model = parseSvg('<svg viewBox="0 0 300 300"><path fill-rule="evenodd" d="M290 150A140 140 0 1 1 10 150A140 140 0 1 1 290 150Z M210 150A60 60 0 1 1 90 150A60 60 0 1 1 210 150Z"/></svg>');
     const skeleton = generateSkeleton(model, { widthMm: 300, heightMm: 300 });
-    const filtered = generatePartitions(skeleton, { moduleLengthMm: 30, moduleWidthMm: 15, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
+    const filtered = generatePartitions(skeleton);
     return filtered.paths.map((path: { closed: boolean; d: string }) => ({ closed: path.closed, d: path.d }));
   });
   expect(result.length).toBeGreaterThan(0);

@@ -4,11 +4,11 @@ test('starts without example figures and keeps the requested controls out of vie
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
-  await expect(page.getByRole('group', { name: 'Capas principales' }).getByRole('checkbox')).toHaveCount(5);
+  await expect(page.getByRole('group', { name: 'Capas principales' }).getByRole('checkbox')).toHaveCount(6);
   await expect(page.getByRole('checkbox', { name: 'CONTORNO', exact: true })).toBeChecked();
   await expect(page.locator('.file-section h1')).toContainText('SkLed');
   await expect(page.locator('.brand-icon')).toHaveText('S');
-  await expect(page.getByText('Carga un SVG para comenzar')).toBeVisible();
+  await expect(page.getByText('Carga un SVG o EPS para comenzar')).toBeVisible();
   await expect(page.locator('[data-contour], [data-svg-figure]')).toHaveCount(0);
   await expect(page.locator('header, .figures-section, .zoom-controls, .paste-details, .advanced-layers, .file-info, .electrical-section, .led-summary')).toHaveCount(0);
 
@@ -18,15 +18,13 @@ test('starts without example figures and keeps the requested controls out of vie
   await expect(page.locator('[data-svg-figure]')).toHaveCount(0);
   await page.getByLabel('Largo del módulo').fill('5');
   await page.getByLabel('Ancho del módulo').fill('1');
-  await page.getByLabel('Pigtail izquierdo').fill('0.8');
-  await page.getByLabel('Pigtail derecho').fill('1.2');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('0.8');
+  await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('1.2');
   await expect(page.getByLabel('Largo del módulo')).toHaveValue('5');
   await expect(page.getByLabel('Ancho del módulo')).toHaveValue('1');
-  await expect(page.getByLabel('Pigtail izquierdo')).toHaveValue('0.8');
-  await expect(page.getByLabel('Pigtail derecho')).toHaveValue('1.2');
-  await expect(page.locator('.module-segments span').nth(0)).toContainText('Izq. 0.8');
-  await expect(page.locator('.module-segments span').nth(1)).toContainText('Módulo 5');
-  await expect(page.locator('.module-segments span').nth(2)).toContainText('Der. 1.2');
+  await expect(page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true })).toHaveValue('0.8');
+  await expect(page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true })).toHaveValue('1.2');
+  await expect(page.getByRole('img', { name: 'Módulo a escala: cuerpo 5 por 1 cm, pigtail izquierdo 0.8 cm, pigtail derecho 1.2 cm' })).toBeVisible();
   await expect(page.getByText(/LEDs|Longitud total|Inspeccionar recorrido/)).toHaveCount(0);
   expect(errors).toEqual([]);
 });
@@ -70,9 +68,38 @@ test('shows SVG dimensions and measures each selected figure on the drawing', as
   await expect(page.locator('[data-dimension="width"]')).toHaveText('8 cm');
   await page.getByLabel('Ancho del SVG').fill('60');
   await expect(page.locator('[data-dimension="width"]')).toHaveText('12 cm');
-  await page.getByRole('button', { name: 'Todo el SVG' }).click();
+  await page.locator('[data-figure-hit]').nth(1).click();
   await expect(page.locator('[data-dimension="width"]')).toHaveText('60 cm');
   await expect(page.locator('[data-dimension="height"]')).toHaveText('30 cm');
+});
+
+test('selects separate shapes inside one compound SVG path and keeps counters with their shape', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Cargar archivo SVG').setInputFiles({
+    name: 'figuras-compuestas.svg', mimeType: 'image/svg+xml',
+    buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20" width="40mm" height="20mm"><path fill-rule="evenodd" d="M0 0H20V20H0Z M5 5V15H15V5Z M30 0H40V10H30Z"/></svg>'),
+  });
+  await expect(page.locator('[data-figure-hit]')).toHaveCount(2);
+
+  await page.locator('[data-figure-hit]').nth(1).click();
+  await expect(page.locator('[data-dimension="width"]')).toHaveText('1 cm');
+  await expect(page.locator('[data-dimension="height"]')).toHaveText('1 cm');
+  await page.locator('[data-figure-hit]').nth(1).click();
+  await expect(page.locator('[data-dimension="width"]')).toHaveText('4 cm');
+  await expect(page.locator('[data-dimension="height"]')).toHaveText('2 cm');
+  await page.locator('[data-figure-hit]').nth(1).click();
+  await expect(page.locator('[data-dimension="width"]')).toHaveText('1 cm');
+  await expect(page.locator('[data-dimension="height"]')).toHaveText('1 cm');
+});
+
+test('lets each glyph be measured when a font SVG stores the whole word in one path', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Cargar archivo SVG').setInputFiles('tests/fixtures/SAINT_gotico_medio.svg');
+  await expect(page.locator('[data-figure-hit]').nth(1)).toBeAttached();
+  const fullWidth = await page.locator('[data-dimension="width"]').textContent();
+  await page.locator('[data-figure-hit]').nth(1).click();
+  await expect(page.locator('[data-selected-figure]')).toHaveCount(1);
+  await expect(page.locator('[data-dimension="width"]')).not.toHaveText(fullWidth ?? '');
 });
 
 test('dark canvas and controls fit compact widths', async ({ page }) => {
@@ -81,10 +108,11 @@ test('dark canvas and controls fit compact widths', async ({ page }) => {
     await page.goto('/');
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await expect(page.getByRole('checkbox', { name: 'CONTORNO', exact: true })).toBeVisible();
-    await expect(page.getByLabel('Pigtail izquierdo')).toBeVisible();
-    await expect(page.getByLabel('Pigtail derecho')).toBeVisible();
+    await expect(page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true })).toBeVisible();
+    await expect(page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true })).toBeVisible();
     await expect(page.getByLabel('Ancho del SVG')).toBeVisible();
     await expect(page.getByLabel('Alto del SVG')).toBeVisible();
+    await expect(page.getByLabel('Distancia mínima entre skeleton y borde para formar una partida')).toHaveValue('0');
     await expect(page.locator('.canvas-panel')).toHaveCSS('background-color', 'rgb(1, 7, 3)');
   }
 });
@@ -108,7 +136,7 @@ test('centimeter dimensions scale both ways with a lock and remain independent w
   await height.fill('10'); await expect(width).toHaveValue('20');
   await width.fill(''); await expect(height).toHaveValue('10');
   await width.fill('10'); await expect(height).toHaveValue('5');
-  await expect(page.locator('.sidebar input[type="number"]')).toHaveCount(8);
+  await expect(page.locator('.sidebar input[type="number"]')).toHaveCount(9);
   await expect(page.locator('.sidebar input[readonly]')).toHaveCount(0);
   expect(await page.locator('.sidebar').innerText()).not.toMatch(/\bmm\b/);
 });
@@ -181,19 +209,20 @@ test('dragging the canvas pans the plane', async ({ page }) => {
 
 test('obsolete layers are absent while module placement still uses partition settings', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByLabel('Máximo de recorridos')).toHaveCount(0);
   await page.getByLabel('Cargar archivo SVG').setInputFiles({ name: 'aro.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="-10 -10 120 120" width="120mm" height="120mm"><path fill-rule="evenodd" d="M100 50 A50 50 0 1 1 0 50 A50 50 0 1 1 100 50Z M80 50 A30 30 0 1 1 20 50 A30 30 0 1 1 80 50Z"/></svg>') });
-  await expect(page.getByRole('group', { name: 'Capas principales' }).getByRole('checkbox')).toHaveCount(5);
+  await expect(page.getByRole('group', { name: 'Capas principales' }).getByRole('checkbox')).toHaveCount(6);
   await expect(page.getByRole('checkbox', { name: 'PARTIDAS', exact: true })).toHaveCount(1);
   for (const name of ['RECORRIDOS LED', 'RECORRIDO LED PRINCIPAL', 'CONEXIONES']) {
     await expect(page.getByRole('checkbox', { name, exact: true })).toHaveCount(0);
   }
   await page.getByLabel('Largo del módulo').fill('1.2');
   await page.getByLabel('Ancho del módulo').fill('0.5');
-  await page.getByLabel('Pigtail izquierdo').fill('0.4');
-  await page.getByLabel('Pigtail derecho').fill('0.4');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('0.4');
+  await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('0.4');
   await page.getByRole('checkbox', { name: 'MÓDULOS LED' }).check();
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
-  await page.getByLabel('Máximo de recorridos').selectOption('1');
+  await expect(page.getByLabel('Distancia mínima entre skeleton y borde para formar una partida')).toHaveValue('0');
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
   await expect(page.locator('[data-partition], [data-principal-route], [data-connectivity-link]')).toHaveCount(0);
 });

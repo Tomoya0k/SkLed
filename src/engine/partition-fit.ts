@@ -1,4 +1,4 @@
-import type { PartitionConfig, PartitionPath } from './partitions';
+import type { PartitionPath } from './partitions';
 import type { GeometryRegion, GeometryScale } from './regions';
 import { pathData, scaleRegion, unscalePoint } from './regions';
 import { insideRegion, makeRectangle, pathPolyline, pointAt } from './distribution';
@@ -6,7 +6,7 @@ import { insideRegion, makeRectangle, pathPolyline, pointAt } from './distributi
 /** Keep only spans supported by at least one complete, physical LED body.
  * A long line or a wide cross-section alone does not establish body fit. */
 export function filterPartitionsForBody(paths: PartitionPath[], regions: GeometryRegion[], scale: GeometryScale,
-  config: PartitionConfig): PartitionPath[] {
+  config: { moduleLengthMm?: number; moduleWidthMm: number; edgeMarginMm: number }): PartitionPath[] {
   const lengthMm = config.moduleLengthMm;
   if (!lengthMm) return paths;
   const physicalRegions = new Map(regions.map(region => [region.id, scaleRegion(region, scale)]));

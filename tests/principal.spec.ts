@@ -18,7 +18,7 @@ function fixtures(height: number, laneY: [number, number]) {
   const paths = laneY.map((y, index) => ({ id: `part-${index}`, figureId, regionId, outerContourId: 'outer', innerContourId: '',
     sourceEdgeId: edge.id, sourceRange: [0, 260] as [number, number], lane: (index ? 1 : -1) as -1 | 1,
     closed: false, points: [{ x: 20, y }, { x: 280, y }], d: `M 20 ${y} L 280 ${y}`, index, fraction: index / 2 }));
-  const partitions: PartitionResult = { paths, regions: [region], requiredWidthMm: 0, pairs: 1, warnings: [] };
+  const partitions: PartitionResult = { paths, regions: [region], pairs: 1, warnings: [] };
   return { model, skeleton, partitions };
 }
 
@@ -94,7 +94,7 @@ test('a bend keeps two modules when their pigtails suffice and reports an imposs
   const points = [{ x: 50, y: 100 }, { x: 115, y: 100 }, { x: 115, y: 165 }];
   const skeleton: SkeletonResult = { nodes: [], edges: [{ id: 'bend', figureId, regionId, from: null, to: null, points,
     closed: false, d: 'M 50 100 L 115 100 L 115 165' }], regions: [region], scale: { x: 1, y: 1 }, units: 'mm', resolution: 1, warnings: [] };
-  const partitions: PartitionResult = { paths: [], regions: [region], requiredWidthMm: 0, pairs: 0, warnings: [] };
+  const partitions: PartitionResult = { paths: [], regions: [region], pairs: 0, warnings: [] };
   const close = selectPrincipalRoutes(model, skeleton, partitions, { ...config, criticalGapMm: 6,
     leftPigtailMm: 24, rightPigtailMm: 24 }, 200, 200);
   expect(close.figures[0].selected?.links).toHaveLength(1);
@@ -114,7 +114,7 @@ test('adds one physical link module on a bend only when A→C→B resolves both 
   const points = [{ x: 20, y: 100 }, { x: 107.5, y: 80 }, { x: 195, y: 100 }];
   const skeleton: SkeletonResult = { nodes: [], edges: [{ id: 'curve', figureId, regionId, from: null, to: null, points,
     closed: false, d: 'M 20 100 L 107.5 80 L 195 100' }], regions: [region], scale: { x: 1, y: 1 }, units: 'mm', resolution: 1, warnings: [] };
-  const partitions: PartitionResult = { paths: [], regions: [region], requiredWidthMm: 0, pairs: 0, warnings: [] };
+  const partitions: PartitionResult = { paths: [], regions: [region], pairs: 0, warnings: [] };
   const result = selectPrincipalRoutes(model, skeleton, partitions, config, 220, 180);
   const route = result.figures[0].selected!;
   expect(route.linkModules).toBe(1);

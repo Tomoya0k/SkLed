@@ -137,12 +137,14 @@ function crossesBody(a: Point, b: Point, corners: Point[]): boolean {
   return false;
 }
 
-function routeAvoidsBodies(route: Point[], bodyById: Map<string, Point[]>, fromId: string, toId: string): boolean {
+function routeAvoidsBodies(route: Point[], bodyById: Map<string, Point[]>, fromId: string, toId: string, avoidModuleCollisions = true): boolean {
+  if (!avoidModuleCollisions) return true;
   for (let index = 1; index < route.length; index++) {
     const a = route[index - 1], b = route[index];
     for (const [id, corners] of bodyById) {
       if (id === fromId || id === toId) continue;
-      if (crossesBody(a, b, corners)) return false;
+      const middle = midpoint(a, b);
+      if (insidePolygon(a, corners) || insidePolygon(middle, corners) || insidePolygon(b, corners) || crossesBody(a, b, corners)) return false;
     }
   }
   return true;
@@ -215,11 +217,11 @@ function guidedRoutes(a: Terminal, b: Terminal, guide: Guide): Point[][] {
   return [forward, backward].filter(route => route.length > 1).map(route => [a.mm, exitPoint(a), ...route, exitPoint(b), b.mm]);
 }
 
-function terminalPairRoute(a: Terminal, b: Terminal, regions: Region[], guide: Guide | undefined, bodies: Map<string, Point[]>): Point[] | null {
+function terminalPairRoute(a: Terminal, b: Terminal, regions: Region[], guide: Guide | undefined, bodies: Map<string, Point[]>, avoidModuleCollisions = true): Point[] | null {
   const valid = (route: Point[]) => {
     if (!exitsBody(a, route[1]) || !exitsBody(b, route[route.length - 2])) return false;
     if (!route.every((point, index) => index === 0 || segmentInside(route[index - 1], point, regions))) return false;
-    if (!routeAvoidsBodies(route, bodies, a.module.id, b.module.id)) return false;
+    if (!routeAvoidsBodies(route, bodies, a.module.id, b.module.id, avoidModuleCollisions)) return false;
     return true;
   };
   const direct = [a.mm, b.mm];
@@ -273,7 +275,7 @@ export function createPigtailChecker(regions: GeometryRegion[], paths: DivisionP
 /** Ordered connections for a snake, strictly within the available pigtails.
  * Detours count toward the limit; supplementary cable is never accepted. */
 export function createSerpentCableRouter(regions: GeometryRegion[], paths: DivisionPath[], modules: LedPlacement[],
-  measurements: ModuleMeasurements, scale: Scale) {
+  measurements: ModuleMeasurements, scale: Scale, avoidModuleCollisions = true) {
   createModuleGeometry(measurements);
   const surfaces: Region[] = regions.map(region => ({ outer: region.outer.map(p => toMm(p, scale)), inner: null, holes: region.holes.map(hole => hole.map(p => toMm(p, scale))) }));
   const guides = new Map(paths.map(path => [path.id, makeGuide(path, scale)]));
@@ -282,13 +284,13 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
   const cache = new Map<string, ConnectionLink | null>();
   const networkAttachments = new Map<string, Array<{ id: number; cost: number }>>();
   let network: { points: Point[]; origins: string[]; adjacent: Map<number, number[]>; buckets: Map<string, number[]>; radius: number; neighbors: Map<number, number[]> } | null = null;
-  const internalClear = (a: Point, b: Point) => segmentInside(a, b, surfaces) && routeAvoidsBodies([a, b], bodies, '', '');
+  const internalClear = (a: Point, b: Point) => segmentInside(a, b, surfaces) && routeAvoidsBodies([a, b], bodies, '', '', avoidModuleCollisions);
   const prepareNetwork = () => {
     if (network) return network;
     const points: Point[] = [], origins: string[] = [], keys = new Map<string, number>(), adjacent = new Map<number, number[]>();
     const radius = Math.max(10, measurements.widthMm * 2, measurements.lengthMm / 2);
     const add = (p: Point, origin: string) => {
-      if (!insideRegions(p, surfaces) || [...bodies.values()].some(body => insidePolygon(p, body))) return -1;
+      if (!insideRegions(p, surfaces) || (avoidModuleCollisions && [...bodies.values()].some(body => insidePolygon(p, body)))) return -1;
       const key = `${p.x.toFixed(5)},${p.y.toFixed(5)}`;
       const existing = keys.get(key); if (existing !== undefined) return existing;
       const id = points.length; points.push(p); origins.push(origin); keys.set(key, id); return id;
@@ -320,7 +322,7 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
       const result: Array<{ id: number; cost: number }> = [];
       const candidates = points.map((p, id) => ({ id, cost: distance(p, terminal.mm) })).filter(item => item.cost <= measurements.lengthMm + measurements.widthMm * 2).sort((x, y) => x.cost - y.cost);
       for (const item of candidates) {
-        if (exitsBody(terminal, points[item.id]) && segmentInside(terminal.mm, points[item.id], surfaces) && routeAvoidsBodies([terminal.mm, points[item.id]], bodies, terminal.module.id, '')) result.push(item);
+        if (exitsBody(terminal, points[item.id]) && segmentInside(terminal.mm, points[item.id], surfaces) && routeAvoidsBodies([terminal.mm, points[item.id]], bodies, terminal.module.id, '', avoidModuleCollisions)) result.push(item);
         if (result.length === 8) break;
       }
       networkAttachments.set(key, result); return result;
@@ -374,7 +376,7 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
     const mask = new Uint8Array(columns * rows);
     for (let y = 0; y < rows; y++) for (let x = 0; x < columns; x++) mask[y * columns + x] = Number(insideRegions({ x: minX + x * cell, y: minY + y * cell }, surfaces));
     // Only visit each body's bounding cells, instead of all bodies per pixel.
-    for (const corners of bodies.values()) {
+    if (avoidModuleCollisions) for (const corners of bodies.values()) {
       const center = midpoint(corners[0], corners[2]);
       const length = distance(corners[0], corners[1]), width = distance(corners[0], corners[3]);
       const tx = (corners[1].x - corners[0].x) / length, ty = (corners[1].y - corners[0].y) / length;
@@ -398,7 +400,7 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
       const candidates: Array<{ id: number; cost: number }> = [];
       for (let y = Math.max(0, cy - 4); y <= Math.min(rows - 1, cy + 4); y++) for (let x = Math.max(0, cx - 4); x <= Math.min(columns - 1, cx + 4); x++) {
         const id = y * columns + x, p = point(id);
-        if (mask[id] && exitsBody(terminal, p) && segmentInside(terminal.mm, p, surfaces) && routeAvoidsBodies([terminal.mm, p], bodies, terminal.module.id, '')) candidates.push({ id, cost: distance(terminal.mm, p) });
+        if (mask[id] && exitsBody(terminal, p) && segmentInside(terminal.mm, p, surfaces) && routeAvoidsBodies([terminal.mm, p], bodies, terminal.module.id, '', avoidModuleCollisions)) candidates.push({ id, cost: distance(terminal.mm, p) });
       }
       return candidates.sort((first, second) => first.cost - second.cost).slice(0, 12);
     };
@@ -430,7 +432,7 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
     for (let id = end; id >= 0; id = previous[id]) route.push(point(id));
     route.push(a.mm); route.reverse();
     const safeSegment = (i: number, j: number) => (i !== 0 || exitsBody(a, route[j])) && (j !== route.length - 1 || exitsBody(b, route[i])) &&
-      segmentInside(route[i], route[j], surfaces) && routeAvoidsBodies([route[i], route[j]], bodies, i === 0 ? a.module.id : '', j === route.length - 1 ? b.module.id : '');
+      segmentInside(route[i], route[j], surfaces) && routeAvoidsBodies([route[i], route[j]], bodies, i === 0 ? a.module.id : '', j === route.length - 1 ? b.module.id : '', avoidModuleCollisions);
     const simplified = [route[0]];
     for (let i = 0; i < route.length - 1;) {
       let next = i + 1;
@@ -449,7 +451,7 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
     if (distance(a.mm, b.mm) > limit + 1e-6) { cache.set(key, null); return null; }
     const guide = first.divisionId === second.divisionId ? guides.get(first.divisionId) ?? undefined : undefined;
     const withinReach = (route: Point[] | null) => route && routeLength(route) <= limit + 1e-6 ? route : null;
-    const route = withinReach(terminalPairRoute(a, b, surfaces, guide, bodies)) ?? withinReach(networkRoute(a, b)) ?? withinReach(rasterRoute(a, b));
+    const route = withinReach(terminalPairRoute(a, b, surfaces, guide, bodies, avoidModuleCollisions)) ?? withinReach(networkRoute(a, b)) ?? withinReach(rasterRoute(a, b));
     const lengthMm = route ? routeLength(route) : 0;
     const result = route ? asLink({ a, b, routeMm: route, lengthMm, bridgeLengthMm: 0 }, cache.size, scale) : null;
     cache.set(key, result); return result;

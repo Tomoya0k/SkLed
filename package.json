@@ -10,6 +10,8 @@
     "test": "playwright test"
   },
   "dependencies": {
+    "@wasm-zoo/ghostscript": "^0.7.2",
+    "mupdf": "^1.28.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "svgpath": "^2.6.0"

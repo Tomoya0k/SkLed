@@ -75,41 +75,41 @@ test('LED layer waits for physical dimensions and reacts to module sizes and par
   await page.getByLabel('Ancho del SVG').fill('24');
   await page.getByLabel('Largo del módulo').fill('1.2');
   await page.getByLabel('Ancho del módulo').fill('0.5');
-  await page.getByLabel('Pigtail izquierdo').fill('3');
-  await page.getByLabel('Pigtail derecho').fill('3');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('3');
+  await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('3');
+  await expect(page.getByText('Calculando recorridos candidatos y distribución LED…', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
   await expect(page.locator('[data-division]')).toHaveCount(0);
   const firstCount = await page.locator('[data-led-module]').count();
   expect(firstCount).toBeGreaterThan(0);
   await page.getByLabel('Largo del módulo').fill('2');
+  await expect(page.getByText('Calculando recorridos candidatos y distribución LED…', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
   const secondCount = await page.locator('[data-led-module]').count();
   expect(secondCount).toBeLessThan(firstCount);
-  await page.getByLabel('Separación libre entre recorridos').fill('0');
-  await page.getByLabel('Margen objetivo al borde').fill('0');
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
 });
 
-test('route layer draws only the guides used by placed LEDs beneath their modules', async ({ page }) => {
+test('PARTIDAS shows candidate guides without placing LEDs and stays independent of the module layer', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('Cargar archivo SVG').setInputFiles({ name: 'aro.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(ringSvg) });
   await page.getByLabel('Ancho del SVG').fill('12');
   await page.getByLabel('Largo del módulo').fill('1.2');
   await page.getByLabel('Ancho del módulo').fill('0.5');
-  await page.getByLabel('Pigtail izquierdo').fill('0.4');
-  await page.getByLabel('Pigtail derecho').fill('0.4');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('0.4');
+  await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('0.4');
 
   const routes = page.locator('[data-led-route]');
   const modules = page.locator('[data-led-module]');
   await page.getByRole('checkbox', { name: 'PARTIDAS' }).check();
   await expect(routes.first()).toBeVisible();
   await expect(modules).toHaveCount(0);
+  const candidateCount = await routes.count();
+  expect(candidateCount).toBeGreaterThan(0);
 
   await page.getByRole('checkbox', { name: 'MÓDULOS LED' }).check();
   await expect(modules.first()).toBeVisible();
-  const routeIds = await routes.evaluateAll(nodes => [...new Set(nodes.map(node => node.getAttribute('data-led-route')))].sort());
-  const usedIds = await modules.evaluateAll(nodes => [...new Set(nodes.map(node => node.getAttribute('data-led-route-id')))].sort());
-  expect(routeIds).toEqual(usedIds);
+  await expect(routes).toHaveCount(candidateCount);
   const routesAreUnderModules = await page.locator('.drawing').evaluate(svg => {
     const route = svg.querySelector('[data-led-route]'), module = svg.querySelector('[data-led-module]');
     return !!route && !!module && !!(route.compareDocumentPosition(module) & Node.DOCUMENT_POSITION_FOLLOWING);
@@ -130,8 +130,8 @@ test('keeps placed modules from every SVG figure without a figure list', async (
   });
   await page.getByLabel('Largo del módulo').fill('1.2');
   await page.getByLabel('Ancho del módulo').fill('0.5');
-  await page.getByLabel('Pigtail izquierdo').fill('0.4');
-  await page.getByLabel('Pigtail derecho').fill('0.4');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('0.4');
+  await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('0.4');
   await page.getByRole('checkbox', { name: 'MÓDULOS LED' }).check();
   const modules = page.locator('[data-led-module]');
   await expect(modules.first()).toBeVisible();

@@ -7,7 +7,7 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 button, summary, input[type="checkbox"] { cursor: pointer; }
 button { color: inherit; }
 button:disabled { opacity: .45; cursor: not-allowed; }
-button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid #5dff9b; outline-offset: 3px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #5dff9b; outline-offset: 3px; }
 h1, h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .app { min-height: 100vh; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 17px; letter-spacing: -.4px; }
@@ -17,7 +17,6 @@ h1, h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .panel-section { padding: 23px 19px; border-bottom: 1px solid #263a30; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .file-section .section-heading { margin-bottom: 19px; }
-.count-badge { font: 10px ui-monospace, monospace; color: #a4cdb1; padding: 3px 7px; background: #1c3828; border-radius: 4px; }
 .upload-button { width: 100%; padding: 11px 14px; border-radius: 5px; border: 1px solid #209c55; background: #168648; color: white; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 12px; font-weight: 650; }
 .upload-button:hover { background: #1d9c57; }
 .size-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -31,22 +30,20 @@ h1, h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .size-fields small { padding-right: 7px; color: #9ab4a0; font: 9px ui-monospace, monospace; }
 .size-hint { display: block; margin-top: 9px; color: #7fa88b; font-size: 9px; }
 .division-hint { display: block; margin-top: 9px; color: #e7a4ab; font-size: 10px; line-height: 1.4; }
-.module-sketch { display: block; width: 100%; max-width: 232px; height: auto; margin: -3px auto 11px; }
+.module-sketch { display: block; width: 100%; max-width: 280px; height: auto; margin: -3px auto 11px; overflow: visible; }
+.module-sketch-labels { letter-spacing: -.15px; }
 .module-fields { display: grid; gap: 11px; }
 .module-fields label { display: grid; gap: 6px; color: #b7ccba; font-size: 11px; }
 .module-fields label > span { display: flex; align-items: center; border: 1px solid #32523b; border-radius: 4px; overflow: hidden; background: #0d1912; }
 .module-fields input { width: 100%; min-width: 0; color: #effff2; padding: 8px 10px; background: transparent; border: 0; font: 12px ui-monospace, monospace; }
 .module-fields input::placeholder { color: #56715d; }
 .module-fields small { font: 10px ui-monospace, monospace; color: #9ab4a0; padding: 0 10px; }
-.module-segments { display: grid; grid-template-columns: 1fr 1.3fr 1fr; margin-top: 12px; border: 1px solid #315b3e; border-radius: 4px; overflow: hidden; font: 9px ui-monospace, monospace; color: #a2bbaa; }
-.module-segments span { padding: 7px 3px; text-align: center; background: #183022; border-right: 1px solid #315b3e; white-space: nowrap; }
-.module-segments span:nth-child(2) { background: #21432d; }
-.module-segments span:last-child { border-right: 0; }
-.module-segments b { color: #d6ffde; font-weight: 600; }
+.minimum-gap-field { display: grid; gap: 7px; color: #b7ccba; font-size: 11px; }
+.minimum-gap-field > span { display: flex; align-items: center; border: 1px solid #32523b; border-radius: 4px; overflow: hidden; background: #0d1912; }
+.minimum-gap-field input { width: 100%; min-width: 0; color: #effff2; padding: 8px 10px; background: transparent; border: 0; font: 12px ui-monospace, monospace; }
+.minimum-gap-field small { font: 10px ui-monospace, monospace; color: #9ab4a0; padding: 0 10px; }
 .main-panel { min-width: 0; padding: 23px; display: flex; flex-direction: column; gap: 16px; }
 .layer-controls { display: grid; gap: 10px; }
-.partition-limit { display: grid; gap: 7px; margin-bottom: 12px; color: #b7ccba; font-size: 11px; }
-.partition-limit select { min-width: 0; width: 100%; padding: 8px; border: 1px solid #68434a; border-radius: 4px; background: #201719; color: #ffe0e6; font: inherit; }
 .geometry-status { display: grid; gap: 6px; color: #bbabd4; font-size: 11px; }
 .geometry-status:empty { display: none; }
 .geometry-status .division-hint { margin-top: 0; }
@@ -65,7 +62,15 @@ h1, h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .layer-switches .led-toggle input { accent-color: #48e4e1; }
 .layer-switches .serpent-toggle.active { border-color: #ec64b3; color: #ffcfeb; background: #3a1930; box-shadow: inset 0 0 0 1px #844064; }
 .layer-switches .serpent-toggle input { accent-color: #ff72c4; }
+.layer-switches .connection-toggle.active { border-color: #e2b75d; color: #ffefbd; background: #3a3019; box-shadow: inset 0 0 0 1px #88703a; }
+.layer-switches .connection-toggle input { accent-color: #ffd36b; }
 .serpent-line { fill: none; stroke: #ff72c4; stroke-width: 2.2; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.wiring-connection, .wiring-pigtail, .wiring-bridge { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.wiring-connection { stroke: #d7e7dc; stroke-width: 3.6; opacity: .7; }
+.wiring-pigtail { stroke-width: 2; }
+.source-pigtail, .open-pigtail { stroke: #ff6874; }
+.target-pigtail { stroke: #4be4da; }
+.wiring-bridge { stroke: #ffd36b; stroke-width: 2.2; }
 .notice { padding: 10px 13px; border: 1px solid; border-radius: 4px; font-size: 11px; line-height: 1.5; }
 .notice.error { background: #351c20; border-color: #884950; color: #ffb9c1; display: flex; justify-content: space-between; align-items: flex-start; }
 .notice.error button { border: 0; background: transparent; font-size: 18px; color: inherit; }
@@ -76,21 +81,23 @@ h1, h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .drawing { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; user-select: none; }
 .canvas-panel.panning .drawing { cursor: grabbing; }
 .led-body { fill: #31c9c5b8; stroke: #d3fffa; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
-.led-route { fill: none; stroke: #ffbd61; stroke-width: 2.5; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.led-route { fill: none; stroke: #ffbd61; stroke-width: 1.7; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .led-direction { stroke: #062322; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
 .led-arrow { fill: #06302d; }
 .led-number { fill: #ffffff; stroke: #0a3230; stroke-width: .6px; paint-order: stroke; font-family: ui-monospace, monospace; font-weight: 700; pointer-events: none; }
 .dimensions { pointer-events: none; }
-.dimension-line { fill: none; stroke: #ffbd61; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
-.dimension-text { fill: #ffe5b8; stroke: #07130c; stroke-width: 4px; paint-order: stroke; font-family: ui-monospace, monospace; font-weight: 700; }
+.dimension-line { fill: none; stroke: #ffc66d; stroke-width: 1.25; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
+.dimension-label { fill: #101b13; stroke: #b9823e; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.dimension-text { fill: #fff0d0; font-family: ui-monospace, monospace; font-weight: 800; }
 .figure-hit { cursor: crosshair; outline: none; }
 .figure-hit:focus-visible { outline: 2px solid #ffbd61; outline-offset: 4px; }
-.dimension-selection { position: absolute; top: 12px; left: 12px; display: flex; align-items: center; gap: 10px; max-width: calc(100% - 24px); padding: 5px 7px; border: 1px solid #ad7834; border-radius: 4px; background: #241a0df0; color: #ffe5b8; font-size: 11px; }
-.dimension-selection span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dimension-selection button { flex: none; padding: 3px 6px; border: 1px solid #ad7834; border-radius: 3px; background: #392713; color: #ffe5b8; font-size: 10px; }
 .canvas-corner { position: absolute; left: 13px; bottom: 12px; max-width: calc(100% - 26px); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #80c390; background: #05140bcc; padding: 5px 7px; border: 1px solid #27683b; border-radius: 3px; font: 10px ui-monospace, monospace; pointer-events: none; }
 .drop-overlay, .empty-overlay { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; color: #a2ffc1; font-size: 16px; background: #06230ebf; }
 .empty-overlay { background: transparent; color: #70a67e; font-size: 12px; }
 @media (max-width: 760px) { .workspace { grid-template-columns: 205px minmax(0, 1fr); } .panel-section { padding: 18px 12px; } .main-panel { padding: 15px; } .layer-switches { flex-wrap: wrap; gap: 8px; } .layer-switches label { min-width: 107px; min-height: 38px; padding: 0 10px; font-size: 10px; } .canvas-panel { height: 65vh; min-height: 390px; } }
-@media (max-width: 530px) { .workspace { display: block; } .sidebar { border-right: 0; display: grid; grid-template-columns: 1fr 1fr; } .file-section { grid-column: 1; grid-row: 1; border-right: 1px solid #263a30; } .size-section { grid-column: 2; grid-row: 1; } .partitions-section { grid-column: 1 / -1; grid-row: 2; } .module-section { grid-column: 1 / -1; grid-row: 3; } .module-sketch { max-width: 170px; } .module-segments { font-size: 7px; } .main-panel { padding: 12px; } .canvas-panel { height: 55vh; min-height: 330px; } }
+@media (max-width: 530px) { .workspace { display: block; } .sidebar { border-right: 0; display: grid; grid-template-columns: 1fr 1fr; } .file-section { grid-column: 1; grid-row: 1; border-right: 1px solid #263a30; } .size-section { grid-column: 2; grid-row: 1; } .partitions-section { grid-column: 1 / -1; grid-row: 2; } .wiring-section { grid-column: 1 / -1; grid-row: 3; } .module-section { grid-column: 1 / -1; grid-row: 4; } .module-sketch { max-width: 280px; } .main-panel { padding: 12px; } .canvas-panel { height: 55vh; min-height: 330px; } }
 @media (max-width: 350px) { .sidebar { display: block; } .module-section { grid-column: auto; grid-row: auto; } .panel-section { border-right: 0; } .module-sketch { max-width: 232px; } }
+
+.physical-filter { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; color: #b7ccba; font-size: 11px; line-height: 1.5; }
+.physical-filter input { margin: 2px 0 0; accent-color: #ffc26e; }
+.wiring-section .minimum-gap-field { margin-top: 12px; }

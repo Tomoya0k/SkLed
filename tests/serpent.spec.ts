@@ -48,16 +48,23 @@ test('pigtail sum is a hard limit, including detours and unequal terminals', asy
   expect(result.reachableDetour!.lengthMm).toBeLessThanOrEqual(120.00001);
 });
 
-test('desired minimum stays at 3 cm with unequal or short pigtails', async ({ page }) => {
+test('desired minimum remains configurable with unequal or short pigtails', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('Cargar archivo SVG').setInputFiles({ name: 'figuras.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(drawing) });
   await page.getByLabel('Largo del módulo').fill('3'); await page.getByLabel('Ancho del módulo').fill('1');
-  await page.getByLabel('Pigtail izquierdo').fill('1.5'); await page.getByLabel('Pigtail derecho').fill('5');
-  await expect(page.locator('.size-hint').filter({ hasText: 'Separación libre' })).toHaveText('Separación libre en fila: mínima deseable 3 cm · máximo 6.5 cm');
-  await page.getByLabel('Pigtail izquierdo').fill('1'); await page.getByLabel('Pigtail derecho').fill('1');
-  await expect(page.locator('.size-hint').filter({ hasText: 'Separación libre' })).toContainText('máximo 2 cm. Los pigtails no alcanzan la mínima deseable.');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('1.5'); await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('5');
+  await expect(page.getByRole('heading', { name: 'Pigtails y conexiones' })).toBeVisible();
+  await expect(page.getByLabel('Separación mínima deseable entre módulos')).toHaveValue('3');
+  await page.getByLabel('Separación mínima deseable entre módulos').fill('9');
+  await expect(page.getByLabel('Separación mínima deseable entre módulos')).toHaveValue('6.5');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('1'); await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('1');
+  await expect(page.getByLabel('Separación mínima deseable entre módulos')).toHaveValue('2');
+  await expect(page.getByRole('img', { name: /pigtail izquierdo 1 cm, pigtail derecho 1 cm/ })).toBeVisible();
   await page.getByRole('checkbox', { name: 'RECORRIDO SERPIENTE', exact: true }).check();
-  await expect(page.locator('[data-serpent-through]').first()).toBeVisible();
+  const through = page.locator('[data-serpent-guide]').first();
+  // A perfectly horizontal SVG path has a zero-height box, despite its visible stroke.
+  await expect(through).toBeAttached();
+  expect(await through.evaluate(node => (node as SVGPathElement).getTotalLength())).toBeGreaterThan(0);
   await expect(page.locator('.notice.error')).toHaveCount(0);
   await expect(page.locator('[data-serpent-kind="bridge"]')).toHaveCount(0);
 });
@@ -66,10 +73,10 @@ test('large SVG calculations can be cancelled without freezing the controls', as
   await page.goto('/');
   await page.getByLabel('Cargar archivo SVG').setInputFiles({ name: 'SAINT.svg', mimeType: 'image/svg+xml', buffer: readFileSync(new URL('./fixtures/SAINT_gotico_extra_grande.svg', import.meta.url)) });
   await page.getByLabel('Largo del módulo').fill('7'); await page.getByLabel('Ancho del módulo').fill('1.5');
-  await page.getByLabel('Pigtail izquierdo').fill('3'); await page.getByLabel('Pigtail derecho').fill('3');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('3'); await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('3');
   const toggle = page.getByRole('checkbox', { name: 'RECORRIDO SERPIENTE', exact: true });
   await toggle.check({ timeout: 2000 });
-  await expect(page.locator('.geometry-status')).toContainText('Calculando guías');
+  await expect(page.locator('.geometry-status')).toContainText('Calculando recorridos candidatos');
   await toggle.uncheck({ timeout: 2000 });
   await expect(toggle).not.toBeChecked();
   await expect(page.locator('.geometry-status')).toHaveCount(0);
@@ -82,7 +89,7 @@ test('snake honors both chosen endpoints, visits one figure once, and never reus
     const { parseSvg, generateSkeleton, generatePartitions, distributeLeds, planSerpent } = await import(enginePath);
     const model = parseSvg(source), measurements = { lengthMm: 30, widthMm: 10, leftPigtailMm: 20, rightPigtailMm: 20 };
     const skeleton = generateSkeleton(model, { widthMm: 460, heightMm: 90 });
-    const paths = generatePartitions(skeleton, { moduleLengthMm: 30, moduleWidthMm: 10, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
+    const paths = generatePartitions(skeleton);
     const distribution = distributeLeds(model, paths, measurements, 460, 90, { minimumGapMm: 20, maximumGapMm: 40, bodyGapMm: 6, edgeMarginMm: 6 });
     const scopeId = distribution.modules[0].regionId;
     const local = distribution.modules.filter((module: { regionId: string }) => module.regionId === scopeId);
@@ -114,40 +121,35 @@ test('snake honors both chosen endpoints, visits one figure once, and never reus
   }
 });
 
-test('snake layer shows only guides for each figure and LED bodies remain independent', async ({ page }) => {
+test('snake combines geometric guides independently of module parameters and layers', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('Cargar archivo SVG').setInputFiles({ name: 'figuras.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(drawing) });
-  await page.getByLabel('Largo del módulo').fill('3');
-  await page.getByLabel('Ancho del módulo').fill('1');
-  await page.getByLabel('Pigtail izquierdo').fill('2');
-  await page.getByLabel('Pigtail derecho').fill('2');
+  await page.getByLabel('Largo del módulo').fill('');
+  await page.getByLabel('Ancho del módulo').fill('');
   const snake = page.getByRole('checkbox', { name: 'RECORRIDO SERPIENTE', exact: true });
   const leds = page.getByRole('checkbox', { name: 'MÓDULOS LED', exact: true });
   await snake.check();
   await expect(page.locator('[data-serpent-scope]')).toHaveCount(2);
-  await expect(page.locator('[data-serpent-link]').first()).toBeAttached();
-  expect(await page.locator('[data-serpent-link]').first().evaluate((path: SVGPathElement) => path.getTotalLength())).toBeGreaterThan(0);
+  await expect(page.locator('[data-serpent-source="partition"]').first()).toBeAttached();
+  await expect(page.locator('[data-serpent-source="skeleton"]').first()).toBeAttached();
   await expect(leds).not.toBeChecked();
-  await expect(page.locator('[data-led-module], .serpent-controls, [data-serpent-entry], [data-serpent-exit], [data-serpent-terminal], [data-serpent-module-hit]')).toHaveCount(0);
-  await expect(page.locator('[data-serpent-scope] polygon, [data-serpent-scope] text, [data-serpent-scope] circle, [data-serpent-scope] [marker-end], [data-serpent-unresolved]')).toHaveCount(0);
-  for (const name of ['Elegir inicio', 'Elegir salida', 'Invertir']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
-  const guides = await page.locator('[data-serpent-through]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-serpent-through')).sort());
+  await expect(page.locator('[data-led-module], .serpent-controls, [data-serpent-entry], [data-serpent-exit]')).toHaveCount(0);
+  await expect(page.locator('[data-serpent-scope] polygon, [data-serpent-scope] text, [data-serpent-scope] circle, [data-serpent-scope] [marker-end]')).toHaveCount(0);
+  const readGuides = () => page.locator('[data-serpent-guide]').evaluateAll(nodes => nodes.map(node => [node.getAttribute('data-serpent-guide'), node.getAttribute('d'), node.getAttribute('data-serpent-source')]));
+  const guides = await readGuides();
+  await page.getByLabel('Largo del módulo').fill('3');
+  await page.getByLabel('Ancho del módulo').fill('1');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('2');
+  await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('2');
   await leds.check();
-  await expect(page.locator('[data-led-module]')).toHaveCount(guides.length);
-  const bodies = await page.locator('[data-led-module]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-led-module')).sort());
-  expect(guides).toEqual(bodies);
-  const guidesMatchBodyAxes = await page.locator('.drawing').evaluate(svg => [...svg.querySelectorAll('[data-led-module]')].every(module => {
-    const guide = [...svg.querySelectorAll('[data-serpent-through]')].find(node => node.getAttribute('data-serpent-through') === module.getAttribute('data-led-module')) as SVGPathElement;
-    const body = module.querySelector('.led-body') as SVGPolygonElement;
-    const ends = [guide.getPointAtLength(0), guide.getPointAtLength(guide.getTotalLength())];
-    const left = { x: (body.points[0].x + body.points[3].x) / 2, y: (body.points[0].y + body.points[3].y) / 2 };
-    const right = { x: (body.points[1].x + body.points[2].x) / 2, y: (body.points[1].y + body.points[2].y) / 2 };
-    return ends.every(p => Math.min(Math.hypot(p.x - left.x, p.y - left.y), Math.hypot(p.x - right.x, p.y - right.y)) < 0.001);
-  }));
-  expect(guidesMatchBodyAxes).toBe(true);
+  await expect(page.locator('[data-led-module]').first()).toBeAttached();
+  expect(await readGuides()).toEqual(guides);
   await leds.uncheck();
   await expect(page.locator('[data-led-module]')).toHaveCount(0);
-  await expect(page.locator('[data-serpent-through]')).toHaveCount(guides.length);
+  await expect.poll(readGuides).toEqual(guides);
+  await page.getByLabel('Distancia mínima entre skeleton y borde para formar una partida', { exact: true }).fill('100');
+  await expect(page.locator('[data-serpent-source="partition"]')).toHaveCount(0);
+  await expect(page.locator('[data-serpent-source="skeleton"]').first()).toBeAttached();
   await snake.uncheck();
   await expect(page.locator('[data-serpent-scope]')).toHaveCount(0);
 });
@@ -160,7 +162,7 @@ test('a snake around a hole keeps its entire cable route out of the void', async
     const model = parseSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><path fill-rule="evenodd" d="M5 5H195V195H5Z M65 65H135V135H65Z"/></svg>');
     const measurements = { lengthMm: 25, widthMm: 10, leftPigtailMm: 20, rightPigtailMm: 20 };
     const skeleton = generateSkeleton(model, { widthMm: 200, heightMm: 200 });
-    const paths = generatePartitions(skeleton, { moduleLengthMm: 25, moduleWidthMm: 10, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
+    const paths = generatePartitions(skeleton);
     const distribution = distributeLeds(model, paths, measurements, 200, 200, { minimumGapMm: 20, maximumGapMm: 40, bodyGapMm: 6, edgeMarginMm: 6 });
     return planSerpent(model, paths, distribution, measurements, 200, 200, { scopeId: distribution.modules[0].regionId });
   });

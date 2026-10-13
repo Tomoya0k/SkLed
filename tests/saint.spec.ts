@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
 for (const size of ['medio', 'grande', 'extra_grande']) {
-  test(`SAINT ${size} keeps physical row gaps and combines central tips with paired lanes`, async ({ page }) => {
+  test(`SAINT ${size} keeps physical row gaps on candidate routes`, async ({ page }) => {
     test.setTimeout(90000);
     await page.goto('/');
     const source = readFileSync(new URL(`./fixtures/SAINT_gotico_${size}.svg`, import.meta.url), 'utf8');
@@ -13,7 +13,7 @@ for (const size of ['medio', 'grande', 'extra_grande']) {
       const model = parseSvg(source), { widthMm, heightMm } = model.physicalSize;
       const measurements = { lengthMm: 70, widthMm: 15, leftPigtailMm: 30, rightPigtailMm: 30 };
       const skeleton = generateSkeleton(model, { widthMm, heightMm });
-      const partitions = generatePartitions(skeleton, { moduleLengthMm: 70, moduleWidthMm: 15, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
+      const partitions = generatePartitions(skeleton);
       const distribution = distributeLeds(model, partitions, measurements, widthMm, heightMm, { minimumGapMm: 30, maximumGapMm: 60, bodyGapMm: 6, edgeMarginMm: 6 });
       const rectangles = distribution.modules.map((m: { corners: Array<{ x: number; y: number }>; center: { x: number; y: number } }) => {
         const tangent = { x: (m.corners[1].x - m.corners[0].x) / 70, y: (m.corners[1].y - m.corners[0].y) / 70 };
@@ -28,12 +28,6 @@ for (const size of ['medio', 'grande', 'extra_grande']) {
         const region = partitions.regions.find((r: { id: string }) => r.id === distribution.modules[i].regionId);
         return insideRegion(rectangle, { outer: region.outer, inner: null, holes: region.holes }, 6);
       });
-      const central = distribution.modules.filter((module: { divisionId: string }) => partitions.paths.find((path: { id: string }) => path.id === module.divisionId).lane === 0).length;
-      const centralTips = distribution.modules.filter((module: { divisionId: string }) => {
-        const path = partitions.paths.find((p: { id: string }) => p.id === module.divisionId);
-        const edge = skeleton.edges.find((e: { id: string }) => e.id === path.sourceEdgeId);
-        return path.lane === 0 && skeleton.nodes.some((node: { id: string; kind: string }) => node.kind === 'end' && (node.id === edge.from || node.id === edge.to));
-      }).length;
       for (const run of distribution.routeRuns) for (let i = 1; i < run.moduleIds.length; i++) {
         const a = distribution.modules.findIndex((module: { id: string }) => module.id === run.moduleIds[i - 1]);
         const b = distribution.modules.findIndex((module: { id: string }) => module.id === run.moduleIds[i]);
@@ -44,22 +38,19 @@ for (const size of ['medio', 'grande', 'extra_grande']) {
         return { steps: snake.steps.length, links: snake.links.length, breaks: snake.breaks.length, continuous: snake.continuous,
           valid: snake.links.every((link: { lengthMm: number; kind: string; bridgeLengthMm: number }) => link.lengthMm <= 60.000001 && link.kind === 'pigtail' && link.bridgeLengthMm === 0) };
       });
-      const minPartitionLength = Math.min(...partitions.paths.map((path: unknown) => pathPolyline(path, skeleton.scale).length));
       const minRunLength = Math.min(...distribution.routeRuns.map((run: unknown) => pathPolyline(run, skeleton.scale).length));
-      const allFiltered = partitions.paths.every((path: { bodyFiltered: boolean }) => path.bodyFiltered);
-      return { total: distribution.total, central, centralTips, paired: distribution.total - central, minBodyGap, minRowGap, maxRunGap, inside, breaks: distribution.rowBreaks, snakes, minPartitionLength, minRunLength, allFiltered };
+      const centerlineModules = distribution.modules.filter((module: { divisionId: string }) => partitions.paths.find((path: { id: string }) => path.id === module.divisionId).lane === 0).length;
+      const candidateLanes = [...new Set<number>(partitions.paths.map((path: { lane: number }) => path.lane))].sort();
+      return { total: distribution.total, centerlineModules, candidateLanes, minBodyGap, minRowGap, maxRunGap, inside, breaks: distribution.rowBreaks, snakes, minRunLength };
     }, source);
     expect(result.total).toBeGreaterThan(10);
     expect(result.inside).toBe(true);
     expect(result.minBodyGap).toBeGreaterThanOrEqual(5.9999);
     expect(result.minRowGap).toBeGreaterThanOrEqual(29.9999);
-    expect(result.central).toBeGreaterThan(0);
-    expect(result.centralTips).toBeGreaterThan(0);
+    expect(result.centerlineModules).toBe(0);
+    expect(result.candidateLanes).toEqual([-1, 1]);
     expect(result.maxRunGap).toBeLessThanOrEqual(60.0001);
-    expect(result.allFiltered).toBe(true);
-    expect(result.minPartitionLength).toBeGreaterThanOrEqual(69.9999);
     expect(result.minRunLength).toBeGreaterThanOrEqual(69.9999);
-    if (size !== 'medio') expect(result.paired).toBeGreaterThan(0);
     for (const gap of result.breaks) expect(gap.gapMm).toBeGreaterThan(60);
     for (const snake of result.snakes) {
       expect(snake.valid).toBe(true);

@@ -44,6 +44,7 @@ export interface PlacementOptions {
   maximumGapMm?: number;
   bodyGapMm?: number;
   edgeMarginMm?: number;
+  independentPaths?: boolean;
 }
 
 export interface PhysicalScale { x: number; y: number }
@@ -242,7 +243,8 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
     // pigtail spacing; independent slot shifts then compressed it further.
     const slots = Math.max(1, Math.floor((route.length + (route.closed ? 0 : desiredGap)) / (lengthMm + desiredGap)));
     const pitch = route.closed ? route.length / slots : slots > 1 ? (route.length - lengthMm) / (slots - 1) : route.length;
-    const fitsGuide = (position: number) => route.closed || (division.bodyFiltered
+    const candidateGuide = lane(division) !== undefined && lane(division) !== 0;
+    const fitsGuide = (position: number) => route.closed || (division.bodyFiltered || candidateGuide
       ? position >= lengthMm / 2 - 1e-6 && position <= route.length - lengthMm / 2 + 1e-6
       : position >= 0 && position <= route.length);
     const sameRow = (a: Rectangle, b: Rectangle, other: DivisionPath) => {
@@ -252,7 +254,8 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
     };
     type Proposal = { rectangle: Rectangle; position: number };
     const valid = (candidate: Rectangle, local: Proposal[]) => insideRegion(candidate, region, clearance) &&
-      !placed.some(other => overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < (sameRow(candidate, other.rectangle, other.division) ? Math.max(bodyGap, minimumGap) : bodyGap)) &&
+      !placed.some(other => (!options.independentPaths || other.division.id === division.id) &&
+        (overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < (sameRow(candidate, other.rectangle, other.division) ? Math.max(bodyGap, minimumGap) : bodyGap))) &&
       !local.some(other => overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < Math.max(bodyGap, minimumGap));
     let best: Proposal[] = [];
     for (const phase of [0, 0.15, -0.15]) {

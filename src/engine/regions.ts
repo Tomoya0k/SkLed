@@ -1,4 +1,4 @@
-import type { Figure, Point } from './types';
+import type { Bounds, Figure, Point } from './types';
 import svgpath from 'svgpath';
 
 /** Region boundaries in root SVG coordinates. Nested paths retain the importer's hole convention. */
@@ -9,6 +9,14 @@ export interface GeometryRegion {
   holeContourIds: string[];
   outer: Point[];
   holes: Point[][];
+}
+export interface MeasurementTarget {
+  id: string;
+  sourceFigureId: string;
+  name: string;
+  d: string;
+  bounds: Bounds;
+  fillRule: 'nonzero' | 'evenodd';
 }
 export interface GeometryScale { x: number; y: number }
 export const pointDistance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -65,10 +73,24 @@ export function buildRegions(figures: Figure[]): { regions: GeometryRegion[]; wa
   const contours = figures.flatMap(f => f.contours);
   const closed = contours.filter(c => c.closed || pointDistance(c.start, c.end) < 1e-6);
   if (closed.length < contours.length) warnings.push(`${contours.length - closed.length} contorno(s) abierto(s) no tienen superficie interior.`);
-  const samples = closed.map(contour => {
+  // EPS/PDF exporters can paint the same outline twice (fill, then stroke).
+  // Treat coincident boundaries once, including reversed or rotated starts,
+  // otherwise a second outer boundary becomes a solid region over its hole.
+  const seenBoundaries = new Set<string>();
+  const samples = closed.flatMap(contour => {
     const points = contourPolygon(contour.d, Math.max(0.001, Math.min(0.05, contour.length / 50000)));
+    const vertices = points.map(point => `${point.x.toFixed(6)},${point.y.toFixed(6)}`);
+    const canonical = (values: string[]) => {
+      let first = 0;
+      for (let i = 1; i < values.length; i++) if (values[i] < values[first]) first = i;
+      return [...values.slice(first), ...values.slice(0, first)].join(';');
+    };
+    const forward = canonical(vertices), reverse = canonical([...vertices].reverse());
+    const key = forward < reverse ? forward : reverse;
+    if (seenBoundaries.has(key)) return [];
+    seenBoundaries.add(key);
     const area = Math.abs(points.reduce((sum, a, i) => { const b = points[(i + 1) % points.length]; return sum + a.x * b.y - b.x * a.y; }, 0) / 2);
-    return { contour, points, area, parent: -1, depth: 0 };
+    return [{ contour, points, area, parent: -1, depth: 0 }];
   });
   for (const item of samples) {
     let smallest = Infinity;
@@ -97,6 +119,46 @@ export function buildRegions(figures: Figure[]): { regions: GeometryRegion[]; wa
       holeContourIds: holes.map(h => h.contour.id), outer: item.points, holes: holes.map(h => h.points) }];
   });
   return { regions, warnings };
+}
+
+/** Split compound SVG paths into independently measurable filled shapes while keeping each shape's holes attached. */
+export function buildMeasurementTargets(figures: Figure[]): MeasurementTarget[] {
+  return figures.flatMap(figure => {
+    const { regions } = buildRegions([figure]);
+    const usedContours = new Set<string>();
+    const pieces: Array<{ id: string; d: string; bounds: Bounds }> = [];
+    const addPiece = (contours: Figure['contours'], suppliedPoints?: Point[]) => {
+      if (!contours.length) return;
+      const points = suppliedPoints ?? contours.flatMap(contour => contourPolygon(contour.d, Math.max(0.001, Math.min(0.05, contour.length / 50000))));
+      if (!points.length) return;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const point of points) {
+        minX = Math.min(minX, point.x); minY = Math.min(minY, point.y);
+        maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
+      }
+      pieces.push({
+        id: `${figure.id}:${contours[0].id}`,
+        d: contours.map(contour => contour.d).join(' '),
+        bounds: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+      });
+      contours.forEach(contour => usedContours.add(contour.id));
+    };
+
+    for (const region of regions) {
+      const contourIds = new Set([region.outerContourId, ...region.holeContourIds]);
+      addPiece(figure.contours.filter(contour => contourIds.has(contour.id)), [region.outer, ...region.holes].flat());
+    }
+    for (const contour of figure.contours) {
+      if (!usedContours.has(contour.id)) addPiece([contour]);
+    }
+
+    return pieces.map((piece, index) => ({
+      ...piece,
+      sourceFigureId: figure.id,
+      name: pieces.length > 1 ? `${figure.name} · figura ${index + 1}` : figure.name,
+      fillRule: figure.fillRule,
+    }));
+  });
 }
 
 /** Nearest crossings on both sides of a normal, never stepping across a hole. */

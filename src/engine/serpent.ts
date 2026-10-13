@@ -6,7 +6,7 @@ import { createSerpentCableRouter } from './connectivity';
 import type { ConnectionLink, TerminalSide } from './connectivity';
 import { buildRegions } from './regions';
 
-export interface SerpentOptions { scopeId: string; startId?: string | null; endId?: string | null; startSide?: TerminalSide | null; endSide?: TerminalSide | null }
+export interface SerpentOptions { scopeId: string; startId?: string | null; endId?: string | null; startSide?: TerminalSide | null; endSide?: TerminalSide | null; avoidModuleCollisions?: boolean }
 export interface SerpentStep { moduleId: string; order: number; entrySide: TerminalSide; exitSide: TerminalSide; entry: Point; exit: Point }
 export interface SerpentResult {
   scopeId: string;
@@ -45,7 +45,7 @@ export function planSerpent(model: SvgModel, divisions: DivisionResult, distribu
   const start = modules.find(module => module.id === options.startId) ?? longest.find(module => module.id !== options.endId) ?? longest[0];
   const end = modules.find(module => module.id === options.endId && module.id !== start.id) ?? null;
   const regions = (divisions.regions ?? buildRegions(model.figures).regions).filter(region => region.id === options.scopeId || (!modules[0].regionId && region.figureId === modules[0].figureId));
-  const router = createSerpentCableRouter(regions, divisions.paths.filter(path => !path.regionId || regions.some(region => region.id === path.regionId)), modules, measurements, scale);
+  const router = createSerpentCableRouter(regions, divisions.paths.filter(path => !path.regionId || regions.some(region => region.id === path.regionId)), modules, measurements, scale, options.avoidModuleCollisions ?? true);
   const sides: TerminalSide[] = ['left', 'right'];
   // Missing links dominate length. Evaluate terminal orientations together so
   // a nearby row does not consume the terminal needed by the following row.

@@ -1,19 +1,37 @@
 # SkLed · Contornos SVG
 
-Herramienta local de React y TypeScript para cargar un SVG y separar sus figuras
-y subtrazados. Inicia sin un dibujo de ejemplo: usa **Cargar SVG** para mostrarlo.
+Herramienta local de React y TypeScript para cargar SVG o EPS y separar sus figuras
+y subtrazados. Inicia sin un dibujo de ejemplo: usa **Cargar SVG / EPS** para mostrarlo.
 El lienzo ofrece **CONTORNO**, **SKELETON**, **PARTIDAS**, **MÓDULOS LED**
-y **RECORRIDO SERPIENTE**.
-Puedes mostrar u ocultar estas capas. Los ajustes de Partidas determinan la
-distribución de módulos; la capa PARTIDAS muestra solo las guías que tienen
-módulos colocados. Antes de distribuirlos se filtran las partidas: cada tramo
-debe admitir como mínimo el cuerpo completo de un LED, con su largo, ancho y
-margen al borde, sin cruzar huecos. Se eliminan los tramos demasiado cortos o
-estrechos y se recortan las colas sin espacio útil. El serpiente utiliza estas
-partidas filtradas y no las ramas originales del skeleton.
+y **RECORRIDO SERPIENTE**, además de **PIGTAILS Y CONEXIONES**.
+Puedes mostrar u ocultar estas capas. **PARTIDAS** muestra recorridos candidatos
+a mitad de camino entre el skeleton y el borde local. El filtro de distancia
+mínima al borde determina dónde se generan. Cuando se completan las medidas del
+módulo, oculta los trazos donde no cabe ningún cuerpo LED.
+**RECORRIDO SERPIENTE** combina esas partidas con el skeleton: reemplaza los
+tramos de skeleton que originaron partidas y conserva los tramos restantes. Esta
+capa genera una guía fusionada; el cableado físico se dibuja en **PIGTAILS Y
+CONEXIONES**.
+La guía fusionada descarta los ramales hacia las esquinas según el grosor local
+y enlaza los extremos de las partidas con su skeleton de origen mediante
+transiciones suaves dentro de la figura, conservando huecos y figuras separadas.
+Si dos partidas se separan y vuelven a unirse en un tramo demasiado corto para
+mantener filas paralelas, Serpiente conserva el skeleton central y evita formar
+pequeños óvalos. Los recorridos cerrados alrededor de huecos reales se conservan.
+Ambas capas se pueden consultar sin completar las medidas del módulo.
 
-El plano muestra cotas de ancho y alto del SVG. Haz clic en el contorno o el
-interior de una figura para medirla; **Todo el SVG** vuelve a las cotas generales.
+El skeleton y la guía fusionada eliminan automáticamente ramas terminales
+menores de **3 cm**. El umbral fijo limpia ramitas cortas y conserva ciclos y
+tramos entre cruces.
+
+En **Pigtails y conexiones** puedes descartar enlaces que atraviesen otros
+módulos LED y ajustar la **Reserva de cable**, que empieza en **20 %** y se
+puede editar de 0 a 99 %. La reserva reduce la longitud disponible de cada
+pigtail, contando también los desvíos del enlace. No simula el radio mínimo de
+curvatura del cable.
+
+El plano muestra cotas de ancho y alto del SVG. Haz clic en una figura para medirla;
+vuelve a hacer clic en ella para mostrar las cotas generales.
 Todas las medidas de la interfaz y las cotas físicas se expresan en **cm**.
 Si faltan medidas físicas, las cotas muestran unidades SVG. En **Medidas SVG**,
 el candado cerrado mantiene la proporción: cambiar ancho actualiza alto y
@@ -22,13 +40,13 @@ Al cerrarlo de nuevo, se conserva la proporción de las medidas actuales.
 
 ## Uso rápido
 
-1. Pulsa **Cargar SVG** y elige tu archivo.
+1. Pulsa **Cargar SVG / EPS** y elige tu archivo; también puedes arrastrarlo al plano.
 2. Revisa **Medidas SVG** para trabajar con el tamaño físico correcto.
 3. Haz clic en una figura del plano para consultar sus cotas de ancho y alto.
 4. Completa las medidas del módulo y sus pigtails para activar **MÓDULOS LED**.
-5. Activa **PARTIDAS** para ver las guías usadas por los módulos colocados.
-6. Activa **RECORRIDO SERPIENTE** para ver una guía tipo skeleton por donde
-   pasarían los LED, calculada automáticamente para cada figura.
+5. Activa **PARTIDAS** para ver las guías candidatas automáticas.
+6. Activa **RECORRIDO SERPIENTE** para ver las partidas y el skeleton restante,
+   calculados automáticamente para cada figura.
 
 El serpiente muestra únicamente líneas guía, sin cuerpos LED, números ni
 marcas de inicio y salida. Las piezas separadas de un mismo trazado SVG se
@@ -36,6 +54,24 @@ calculan por separado y no se conectan entre sí. Para superponer los cuerpos,
 activa **MÓDULOS LED** de forma independiente.
 
 Puedes combinar las capas, acercar con **Ctrl + rueda** y arrastrar el plano.
+
+### Archivos EPS
+
+La conversión se realiza dentro del navegador, en procesos de trabajo separados,
+sin subir el archivo a un servicio. Los conversores se cargan al importar el primer
+EPS. Se admiten EPS de texto y EPS con cabecera binaria de previsualización,
+incluyendo medidas `BoundingBox` guardadas al final del archivo.
+
+Se conservan los trazos, curvas, huecos y medidas físicas (72 puntos por pulgada).
+El texto se convierte a contornos con las fuentes incluidas en el EPS o disponibles
+en el conversor; para conservar una tipografía externa, expórtala como contornos.
+Las imágenes de mapa de bits no se vectorizan. Los recortes y máscaras deben estar
+aplicados a los trazados, igual que al importar SVG.
+
+Límites: 20 MB por EPS y 2 MB de SVG resultante, con los mismos límites de geometría
+del importador SVG. Si la conversión falla, se conserva el dibujo anterior.
+El conversor usa Ghostscript 10.08.0 (`@wasm-zoo/ghostscript`) y MuPDF 1.28.1,
+ambos bajo AGPL-3.0-or-later. Sus paquetes incluyen los avisos y referencias de licencia.
 
 ## Ejecutar
 
@@ -62,30 +98,34 @@ referencias locales `<use>` y `<symbol>`. Longitudes y puntos extremos son
 mediciones numéricas del navegador en unidades del SVG.
 
 Los campos **largo del módulo**, **ancho del módulo**, **pigtail izquierdo** y
-**pigtail derecho** recogen medidas en centímetros. Los pigtails son tramos
-independientes: el cuerpo empieza en 0 y termina en `L`, el izquierdo va de
-`−Pizq` a 0 y el derecho de `L` a `L + Pder`. El largo del módulo es solo `L`;
-ningún pigtail se añade al cuerpo ni se fusiona con el otro. El desglose se
-muestra cuando introduces las cuatro medidas. Con un SVG y sus medidas físicas,
-la capa MÓDULOS LED calcula su cantidad y posición.
+**pigtail derecho** recogen medidas en centímetros. El dibujo del módulo se
+actualiza a escala con esos valores y muestra cada medida. Los pigtails son
+tramos independientes: el cuerpo empieza en 0 y termina en `L`, el izquierdo
+va de `−Pizq` a 0 y el derecho de `L` a `L + Pder`. El largo del módulo es solo
+`L`; ningún pigtail se añade al cuerpo ni se fusiona con el otro. Con un SVG y
+sus medidas físicas, la capa MÓDULOS LED calcula su cantidad y posición.
 
-La separación libre mínima deseable en fila es de **3 cm**. El máximo es un
-**límite estricto: la suma de ambos pigtails**; con dos de 3 cm, son 6 cm.
-Si la suma es menor que 3 cm, prevalece el máximo y se avisa de que no se
-alcanza la mínima deseable. La separación
-entre recorridos y el margen al borde se ajustan en **Partidas**. Para decidir
-entre el skeleton central y dos recorridos, se comprueba el largo y ancho del
-cuerpo completo. En picos y tramos cortos se conserva la guía central cuando
-las dos filas no pueden alojar cuerpos enteros.
+La separación mínima deseable entre módulos se puede editar en la sección
+**Pigtails y conexiones**. Empieza en **3 cm**. El máximo es un
+**límite estricto: la suma de ambos
+pigtails**; si el mínimo deseable supera ese alcance, se limita al máximo
+físico. La distribución de módulos utiliza las guías combinadas del recorrido
+serpiente. Solo coloca cuerpos completos que quepan dentro de la figura, sin
+cruzar huecos ni otros módulos; esta comprobación no modifica las capas de guías.
 
 Si una curva o un estrechamiento impide colocar otro módulo dentro del rango,
-la guía se divide en filas y se señala el salto. El serpiente comprueba las
-rutas entre terminales dentro de la figura, evitando huecos y otros cuerpos.
+la distribución se divide en filas y se señala el salto. El cálculo de
+**PIGTAILS Y CONEXIONES** comprueba las rutas entre terminales dentro de la
+figura, evitando huecos y otros cuerpos.
 La longitud completa del enlace, incluidas las curvas y los desvíos, debe
 caber en los pigtails utilizados y nunca superar la suma del izquierdo y
 el derecho. No se añade cable para completar el recorrido. Si no se encuentra
 una ruta física dentro del límite, la guía queda separada y se avisa de los
 saltos pendientes.
+
+La capa **PIGTAILS Y CONEXIONES** muestra los tramos de pigtail y sus enlaces,
+incluidos los extremos que quedan libres cuando no hay una conexión posible.
+Esta capa no dibuja el cuerpo ni el número de los módulos.
 
 El lienzo tiene fondo negro y cuadrícula verde. Se omite contenido activo y no se cargan
 recursos externos. Textos e imágenes deben convertirse a trazados; máscaras,

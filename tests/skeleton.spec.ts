@@ -1,5 +1,28 @@
 import { test, expect } from '@playwright/test';
 
+test('duplicate fill and stroke boundaries retain holes without solid skeleton overlays', async ({ page }) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const enginePath = '/src/engine/index.ts';
+    const { parseSvg, generateSkeleton } = await import(enginePath);
+    const ring = 'M180 100 A80 80 0 1 1 20 100 A80 80 0 1 1 180 100 Z M150 100 A50 50 0 1 1 50 100 A50 50 0 1 1 150 100 Z';
+    const rect = 'M220 20H380V180H220Z M250 50H350V150H250Z';
+    // The rectangle duplicate uses a different starting vertex and winding.
+    const reversed = 'M380 180V20H220V180Z M350 150V50H250V150Z';
+    const make = (extra: string) => generateSkeleton(parseSvg(`<svg viewBox="0 0 400 200"><path d="${ring}"/><path d="${rect}"/>${extra}</svg>`), { widthMm: 400, heightMm: 200 });
+    const plain = make('');
+    const duplicate = make(`<path fill="none" stroke="black" d="${ring}"/><path fill="none" stroke="black" d="${reversed}"/>`);
+    return {
+      holes: duplicate.regions.map((r: any) => r.holes.length),
+      points: duplicate.nodes.filter((n: any) => n.kind === 'point').length,
+      geometry: duplicate.edges.map((e: any) => e.d), original: plain.edges.map((e: any) => e.d),
+    };
+  });
+  expect(result.holes).toEqual([1, 1]);
+  expect(result.points).toBe(0);
+  expect(result.geometry).toEqual(result.original);
+});
+
 test('medial graph preserves real branches, a disk point and a ring cycle', async ({ page }) => {
   await page.goto('/');
   const results = await page.evaluate(async () => {
@@ -18,7 +41,7 @@ test('medial graph preserves real branches, a disk point and a ring cycle', asyn
   expect(results[2].edges.some((edge: {closed: boolean}) => edge.closed), JSON.stringify(results)).toBe(true);
 });
 
-test('wide to narrow transitions produce separate open lanes and preserve central skeleton', async ({ page }) => {
+test('candidate partidas stay halfway between the skeleton and both local boundaries', async ({ page }) => {
   await page.goto('/');
   const result = await page.evaluate(async () => {
     const modulePath = '/src/engine/index.ts';
@@ -33,7 +56,7 @@ test('wide to narrow transitions produce separate open lanes and preserve centra
       else parents.set(root(edge.from), root(edge.to));
     }
     const before = JSON.stringify(skeleton);
-    const partitions = generatePartitions(skeleton, { moduleWidthMm: 15, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
+    const partitions = generatePartitions(skeleton);
     const modules = { lengthMm: 10, widthMm: 15, leftPigtailMm: 6, rightPigtailMm: 6 };
     const distribution = distributeLeds(model, partitions, modules, 300, 60);
     const connections = connectLeds(model, partitions, distribution, modules, 300, 60);
@@ -41,10 +64,9 @@ test('wide to narrow transitions produce separate open lanes and preserve centra
   });
   expect(result.unchanged).toBe(true);
   expect(result.cycles).toBe(0);
-  expect(result.paths.some((p: {lane:number}) => p.lane === -1)).toBe(true);
-  const middleLanes = result.paths.filter((p: {lane:number;points:Array<{x:number;y:number}>}) => p.lane !== 0 && p.points.some(q => q.x > 140 && q.x < 160));
-  expect(middleLanes.length).toBeGreaterThanOrEqual(2);
-  expect(result.paths.some((p: {lane:number}) => p.lane === 0)).toBe(true);
+  const middleLanes = result.paths.filter((p: {lane:number;points:Array<{x:number;y:number}>}) => p.points.some(q => q.x > 140 && q.x < 160));
+  expect([...new Set(middleLanes.map((p: {lane:number}) => p.lane))].sort()).toEqual([-1, 1]);
+  expect(result.paths.every((p: {lane:number}) => p.lane !== 0)).toBe(true);
   for (const path of result.paths) {
     expect(path.closed, JSON.stringify({id:path.id,points:path.points})).toBe(false);
     expect(path.d).not.toMatch(/Z$/i);
@@ -54,7 +76,7 @@ test('wide to narrow transitions produce separate open lanes and preserve centra
   expect(result.connected + result.discarded).toBe(result.total);
 });
 
-test('rotated stripes preserve the physical threshold and real square branches', async ({ page }) => {
+test('rotated stripes produce two midpoint candidates and preserve real square branches', async ({ page }) => {
   await page.goto('/');
   const result = await page.evaluate(async () => {
     const modulePath = '/src/engine/index.ts';
@@ -62,14 +84,14 @@ test('rotated stripes preserve the physical threshold and real square branches',
     const stripes = [30, 45].flatMap(angle => [47, 49].map(width => {
       const model = parseSvg(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400"><rect x="50" y="${200-width/2}" width="300" height="${width}" transform="rotate(${angle} 200 200)"/></svg>`);
       const skeleton = generateSkeleton(model, { widthMm: 400, heightMm: 400 });
-      const parts = generatePartitions(skeleton, { moduleWidthMm: 15, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
-      return {angle,width,doubled:parts.paths.some((p:{lane:number})=>p.lane!==0)};
+      const parts = generatePartitions(skeleton);
+      return {angle,width,lanes:[...new Set<number>(parts.paths.map((p:{lane:number})=>p.lane))].sort()};
     }));
     const model = parseSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100"/></svg>');
     const square = generateSkeleton(model,{widthMm:100,heightMm:100});
     return {stripes, squareEnds:square.nodes.filter((n:{kind:string})=>n.kind==='end').length, squareJunctions:square.nodes.filter((n:{kind:string})=>n.kind==='junction').length};
   });
-  expect(result.stripes.map((r:{doubled:boolean})=>r.doubled),JSON.stringify(result.stripes)).toEqual([false,true,false,true]);
+  expect(result.stripes.map((r:{lanes:number[]})=>r.lanes),JSON.stringify(result.stripes)).toEqual([[-1,1],[-1,1],[-1,1],[-1,1]]);
   expect(result.squareEnds).toBe(4); expect(result.squareJunctions).toBeGreaterThanOrEqual(1);
 });
 
@@ -95,14 +117,14 @@ test('wide ring yields two independent natural cycles with balanced physical spa
     const { parseSvg, generateSkeleton, generatePartitions } = await import(modulePath);
     const model = parseSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="-110 -110 220 220"><path fill-rule="evenodd" d="M100 0 A100 100 0 1 1 -100 0 A100 100 0 1 1 100 0Z M40 0 A40 40 0 1 1 -40 0 A40 40 0 1 1 40 0Z"/></svg>');
     const skeleton = generateSkeleton(model, { widthMm: 220, heightMm: 220 });
-    const partitions = generatePartitions(skeleton, { moduleWidthMm: 15, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
+    const partitions = generatePartitions(skeleton);
     return { skeleton: skeleton.edges.map((e: {closed:boolean;points:unknown[]}) => ({closed:e.closed,count:e.points.length})), paths: partitions.paths.map((p: {lane:number;closed:boolean;points:Array<{x:number;y:number}>}) => ({lane:p.lane,closed:p.closed,radius:p.points.reduce((sum:number, q:{x:number;y:number})=>sum+Math.hypot(q.x,q.y),0)/p.points.length})) };
   });
   expect(result.paths, JSON.stringify(result)).toHaveLength(2);
   expect(result.paths.every((p: {closed:boolean}) => p.closed)).toBe(true);
   const radii = result.paths.map((p: {radius:number}) => p.radius).sort((a:number,b:number)=>a-b);
-  expect(radii[0]).toBeCloseTo(57.5, 0);
-  expect(radii[1]).toBeCloseTo(82.5, 0);
+  expect(radii[0]).toBeCloseTo(55, 0);
+  expect(radii[1]).toBeCloseTo(85, 0);
 });
 
 test('multiple holes share region validation and scaling happens before width analysis', async ({ page }) => {
@@ -112,47 +134,46 @@ test('multiple holes share region validation and scaling happens before width an
     const { parseSvg, generateSkeleton, generatePartitions, distributeLeds } = await import(modulePath);
     const model = parseSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 120"><path fill-rule="evenodd" d="M0 0H300V120H0Z M60 30H100V90H60Z M200 30H240V90H200Z"/></svg>');
     const skeleton = generateSkeleton(model, { widthMm: 300, heightMm: 120 });
-    const partitions = generatePartitions(skeleton, { moduleWidthMm: 8, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
+    const partitions = generatePartitions(skeleton);
     const distribution = distributeLeds(model, partitions, { lengthMm: 12, widthMm: 8, leftPigtailMm: 4, rightPigtailMm: 4 }, 300, 120);
     const stripe = parseSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 49"><rect width="300" height="49"/></svg>');
-    const narrow = generatePartitions(generateSkeleton(stripe, { widthMm: 600, heightMm: 40 }), { moduleWidthMm: 15, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
-    const wide = generatePartitions(generateSkeleton(stripe, { widthMm: 600, heightMm: 60 }), { moduleWidthMm: 15, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
+    const narrow = generatePartitions(generateSkeleton(stripe, { widthMm: 600, heightMm: 40 }), { minimumSectionWidthMm: 25 });
+    const wide = generatePartitions(generateSkeleton(stripe, { widthMm: 600, heightMm: 60 }), { minimumSectionWidthMm: 25 });
     return { regions: skeleton.regions.length, holes: skeleton.regions[0].holes.length, modules: distribution.modules,
-      narrow: narrow.paths.some((p:{lane:number})=>p.lane!==0),wide:wide.paths.some((p:{lane:number})=>p.lane!==0) };
+      narrow: narrow.paths,wide:wide.paths };
   });
   expect(result.regions).toBe(1); expect(result.holes).toBe(2);
   expect(result.modules.length).toBeGreaterThan(0);
   for (const module of result.modules) for (const p of module.corners) {
     expect((p.x > 60 && p.x < 100 || p.x > 200 && p.x < 240) && p.y > 30 && p.y < 90).toBe(false);
   }
-  expect(result.narrow).toBe(false); expect(result.wide).toBe(true);
+  expect(result.narrow.length).toBe(0); expect(result.wide.length).toBeGreaterThan(0);
 });
 
 test('module settings leave the visible skeleton unchanged without a partition layer', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('Cargar archivo SVG').setInputFiles({ name:'franja.svg',mimeType:'image/svg+xml',buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 60" width="300mm" height="60mm"><rect width="300" height="60"/></svg>') });
-  await expect(page.getByRole('group',{name:'Capas principales'}).getByRole('checkbox')).toHaveCount(5);
+  await expect(page.getByRole('group',{name:'Capas principales'}).getByRole('checkbox')).toHaveCount(6);
   await page.getByRole('checkbox',{name:'SKELETON',exact:true}).check();
   await expect(page.locator('[data-skeleton-edge]').first()).toBeVisible();
   const skeleton = await page.locator('[data-skeleton-edge]').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('d')));
   await page.getByLabel('Largo del módulo').fill('1.2');
   await page.getByLabel('Ancho del módulo').fill('1.5');
-  await page.getByLabel('Pigtail izquierdo').fill('0.4');
-  await page.getByLabel('Pigtail derecho').fill('0.4');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('0.4');
+  await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('0.4');
   await page.getByRole('checkbox',{name:'MÓDULOS LED',exact:true}).check();
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
-  await page.getByLabel('Máximo de recorridos').selectOption('1');
-  await page.getByLabel('Máximo de recorridos').selectOption('2');
-  await page.getByLabel('Pigtail izquierdo').fill('4.5');
+  await expect(page.getByLabel('Máximo de recorridos')).toHaveCount(0);
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('4.5');
   expect(await page.locator('[data-skeleton-edge]').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('d')))).toEqual(skeleton);
-  await page.getByLabel('Margen objetivo al borde').fill('2');
+  await page.getByLabel('Distancia mínima entre skeleton y borde para formar una partida').fill('2');
   await expect(page.locator('[data-partition]')).toHaveCount(0);
   await page.getByRole('checkbox',{name:'SKELETON',exact:true}).uncheck();
   await expect(page.locator('[data-skeleton-edge]')).toHaveCount(0);
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
 });
 
-test('physical 47/48/49 mm stripes split only at the configurable threshold', async ({ page }) => {
+test('minimum local width filters midpoint guide candidates', async ({ page }) => {
   await page.goto('/');
   const result = await page.evaluate(async () => {
     const modulePath = '/src/engine/index.ts';
@@ -160,16 +181,21 @@ test('physical 47/48/49 mm stripes split only at the configurable threshold', as
     return [47, 48, 49].map(width => {
       const model = parseSvg(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 ${width}"><rect width="300" height="${width}"/></svg>`);
       const skeleton = generateSkeleton(model, { widthMm: 300, heightMm: width });
-      const partitions = generatePartitions(skeleton, { moduleWidthMm: 15, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 2 });
-      const limited = generatePartitions(skeleton, { moduleWidthMm: 15, freeGapMm: 6, edgeMarginMm: 6, maxLanes: 1 });
-      return { width, threshold: partitions.requiredWidthMm, nodes: skeleton.nodes.length, edges: skeleton.edges.length,
-        paths: partitions.paths.map((p: {lane: number; closed: boolean; points: Array<{x:number;y:number}>}) => ({ lane: p.lane, closed: p.closed, points: p.points })), limited: limited.paths.map((p: {lane:number}) => p.lane) };
+      const partitions = generatePartitions(skeleton);
+      const minimumAccepted = generatePartitions(skeleton, { minimumSectionWidthMm: width / 2 - 1 });
+      const minimumFiltered = generatePartitions(skeleton, { minimumSectionWidthMm: 1000 });
+      return { width,
+        paths: partitions.paths.map((p: {lane: number; closed: boolean; points: Array<{x:number;y:number}>}) => ({ lane: p.lane, closed: p.closed, points: p.points })),
+        minAcceptedCount: minimumAccepted.paths.length, minFilteredCount: minimumFiltered.paths.length };
     });
   });
-  expect(result.map((r: {threshold:number}) => r.threshold)).toEqual([48, 48, 48]);
-  expect(result.map((r: {paths:Array<{lane:number}>}) => r.paths.some(p => p.lane !== 0)), JSON.stringify(result.map((r: {width:number;nodes:number;edges:number;paths:unknown[]}) => ({width:r.width,nodes:r.nodes,edges:r.edges,paths:r.paths.length})))).toEqual([false, true, true]);
+  expect(result.every((r: {minAcceptedCount:number;minFilteredCount:number}) => r.minAcceptedCount > 0 && r.minFilteredCount === 0)).toBe(true);
   for (const item of result) {
     expect(item.paths.every((p: {closed:boolean}) => !p.closed)).toBe(true);
-    expect(item.limited.every((lane:number) => lane === 0)).toBe(true);
+    expect(new Set(item.paths.map((p: {lane:number}) => p.lane))).toEqual(new Set([-1, 1]));
+    for (const path of item.paths.filter((candidate: {points:Array<{x:number;y:number}>}) => Math.abs(candidate.points.at(-1)!.x - candidate.points[0].x) > 200)) {
+      const expectedY = path.lane === -1 ? item.width / 4 : item.width * 3 / 4;
+      expect(path.points.filter((point: {x:number}) => point.x > 20 && point.x < 280).every((point: {y:number}) => Math.abs(point.y - expectedY) < 1)).toBe(true);
+    }
   }
 });
