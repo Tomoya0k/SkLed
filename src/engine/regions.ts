@@ -1,7 +1,7 @@
-import type { Bounds, Figure, Point } from './types';
+import type { Bounds, Contour, Figure, Point } from './types';
 import svgpath from 'svgpath';
 
-/** Region boundaries in root SVG coordinates. Nested paths retain the importer's hole convention. */
+/** Filled region boundaries in root SVG coordinates, with holes derived from SVG fill rules. */
 export interface GeometryRegion {
   id: string;
   figureId: string;
@@ -73,12 +73,7 @@ export function buildRegions(figures: Figure[]): { regions: GeometryRegion[]; wa
   const contours = figures.flatMap(f => f.contours);
   const closed = contours.filter(c => c.closed || pointDistance(c.start, c.end) < 1e-6);
   if (closed.length < contours.length) warnings.push(`${contours.length - closed.length} contorno(s) abierto(s) no tienen superficie interior.`);
-  // EPS/PDF exporters can paint the same outline twice (fill, then stroke).
-  // Treat coincident boundaries once, including reversed or rotated starts,
-  // otherwise a second outer boundary becomes a solid region over its hole.
-  const seenBoundaries = new Set<string>();
-  const samples = closed.flatMap(contour => {
-    const points = contourPolygon(contour.d, Math.max(0.001, Math.min(0.05, contour.length / 50000)));
+  const canonicalLoop = (points: Point[]) => {
     const vertices = points.map(point => `${point.x.toFixed(6)},${point.y.toFixed(6)}`);
     const canonical = (values: string[]) => {
       let first = 0;
@@ -86,17 +81,41 @@ export function buildRegions(figures: Figure[]): { regions: GeometryRegion[]; wa
       return [...values.slice(first), ...values.slice(0, first)].join(';');
     };
     const forward = canonical(vertices), reverse = canonical([...vertices].reverse());
-    const key = forward < reverse ? forward : reverse;
-    if (seenBoundaries.has(key)) return [];
-    seenBoundaries.add(key);
-    const area = Math.abs(points.reduce((sum, a, i) => { const b = points[(i + 1) % points.length]; return sum + a.x * b.y - b.x * a.y; }, 0) / 2);
-    return [{ contour, points, area, parent: -1, depth: 0 }];
+    return forward < reverse ? forward : reverse;
+  };
+  type RegionSample = {
+    contour: Contour; figureId: string; fillRule: Figure['fillRule']; points: Point[]; area: number;
+    winding: number; parent: number; insideWinding: number; boundary: boolean; opensRegion: boolean;
+  };
+  const figuresById = new Map(figures.map(figure => [figure.id, figure]));
+  const grouped = new Map<string, { contour: Contour; figureId: string; fillRule: Figure['fillRule']; points: Point[]; area: number; winding: number; count: number }>();
+  for (const contour of closed) {
+    const figure = figuresById.get(contour.figureId);
+    // A stroke-only outline has no known physical width, so it cannot define
+    // a filled region for the geometry engine.
+    if (!figure?.filled) continue;
+    const points = contourPolygon(contour.d, Math.max(0.001, Math.min(0.05, contour.length / 50000)));
+    if (points.length < 3) continue;
+    const signedArea = points.reduce((sum, a, i) => { const b = points[(i + 1) % points.length]; return sum + a.x * b.y - b.x * a.y; }, 0) / 2;
+    const key = `${figure.id}\0${canonicalLoop(points)}`;
+    const group = grouped.get(key);
+    if (group) {
+      group.count++;
+      group.winding += Math.sign(signedArea);
+    } else {
+      grouped.set(key, { contour, figureId: figure.id, fillRule: figure.fillRule, points,
+        area: Math.abs(signedArea), winding: Math.sign(signedArea), count: 1 });
+    }
+  }
+  const samples: RegionSample[] = [...grouped.values()].flatMap(group => {
+    const winding = group.fillRule === 'evenodd' ? group.count % 2 : group.winding;
+    return winding === 0 ? [] : [{ ...group, winding, parent: -1, insideWinding: 0, boundary: false, opensRegion: false }];
   });
   for (const item of samples) {
     let smallest = Infinity;
     samples.forEach((candidate, i) => {
       const stride = Math.max(1, Math.floor(item.points.length / 100));
-      if (candidate.area > item.area * 1.000001 && candidate.area < smallest && item.points.every((p, j) => j % stride !== 0 || polygonContains(p, candidate.points))) {
+      if (candidate.figureId === item.figureId && candidate.area > item.area * 1.000001 && candidate.area < smallest && item.points.every((p, j) => j % stride !== 0 || polygonContains(p, candidate.points))) {
         // Adaptive polygons have few vertices on long straight sides. Check
         // crossings too, so a hole cannot jump across a concave outer notch.
         const crosses = item.points.some((a, i) => {
@@ -111,13 +130,30 @@ export function buildRegions(figures: Figure[]): { regions: GeometryRegion[]; wa
       }
     });
   }
-  for (const item of samples) { for (let p = item.parent; p >= 0; p = samples[p].parent) item.depth++; }
-  const regions = samples.flatMap((item, i) => {
-    if (item.depth % 2) return [];
-    const holes = samples.filter(child => child.parent === i);
-    return [{ id: `region-${item.contour.id}`, figureId: item.contour.figureId, outerContourId: item.contour.id,
-      holeContourIds: holes.map(h => h.contour.id), outer: item.points, holes: holes.map(h => h.points) }];
-  });
+  for (const item of samples) {
+    let outsideWinding = 0;
+    for (let p = item.parent; p >= 0; p = samples[p].parent) outsideWinding += samples[p].winding;
+    item.insideWinding = outsideWinding + item.winding;
+    const filled = (winding: number) => item.fillRule === 'evenodd' ? Math.abs(winding) % 2 === 1 : winding !== 0;
+    const outsideFilled = filled(outsideWinding), insideFilled = filled(item.insideWinding);
+    item.boundary = outsideFilled !== insideFilled;
+    item.opensRegion = !outsideFilled && insideFilled;
+  }
+  const boundaryParent = (index: number) => {
+    for (let parent = samples[index].parent; parent >= 0; parent = samples[parent].parent) if (samples[parent].boundary) return parent;
+    return -1;
+  };
+  const seenRegions = new Set<string>(), regions: GeometryRegion[] = [];
+  for (const [index, item] of samples.entries()) {
+    if (!item.boundary || !item.opensRegion) continue;
+    const holeSamples = samples.filter((hole, holeIndex) => hole.boundary && !hole.opensRegion && boundaryParent(holeIndex) === index);
+    const regionKey = `${canonicalLoop(item.points)}\0${holeSamples.map(hole => canonicalLoop(hole.points)).sort().join('\0')}`;
+    // Identical filled figures can be exported once for fill and once for stroke.
+    if (seenRegions.has(regionKey)) continue;
+    seenRegions.add(regionKey);
+    regions.push({ id: `region-${item.contour.id}`, figureId: item.figureId, outerContourId: item.contour.id,
+      holeContourIds: holeSamples.map(hole => hole.contour.id), outer: item.points, holes: holeSamples.map(hole => hole.points) });
+  }
   return { regions, warnings };
 }
 
@@ -148,6 +184,8 @@ export function buildMeasurementTargets(figures: Figure[]): MeasurementTarget[] 
       const contourIds = new Set([region.outerContourId, ...region.holeContourIds]);
       addPiece(figure.contours.filter(contour => contourIds.has(contour.id)), [region.outer, ...region.holes].flat());
     }
+    if (regions.length) figure.contours.filter(contour => contour.closed || pointDistance(contour.start, contour.end) < 1e-6)
+      .forEach(contour => usedContours.add(contour.id));
     for (const contour of figure.contours) {
       if (!usedContours.has(contour.id)) addPiece([contour]);
     }

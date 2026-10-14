@@ -3,6 +3,7 @@ import type { ChangeEvent, DragEvent, PointerEvent as ReactPointerEvent } from '
 import { buildMeasurementTargets, createModuleGeometry, parseSvg } from './engine';
 import type { Bounds, ConnectionLink, LedPlacement, Point, SvgModel, SerpentResult, SkeletonResult, TerminalSide } from './engine';
 import { usefulSkeletonEdges } from './engine/skeleton-filter';
+import { minimumPigtailSpacingMm } from './engine/pigtail-spacing';
 import { pathData } from './engine/regions';
 import type { LayoutResult, LayoutPlacement } from './engine/layout.worker';
 
@@ -141,9 +142,7 @@ export default function App() {
   const [layoutPlanning, setLayoutPlanning] = useState(false);
   const [selectedFigureId, setSelectedFigureId] = useState<string | null>(null);
   const [minimumSectionWidth, setMinimumSectionWidth] = useState('0');
-  const [minimumDesiredGap, setMinimumDesiredGap] = useState('3');
   const [avoidModuleCollisions, setAvoidModuleCollisions] = useState(true);
-  const [reservePercent, setReservePercent] = useState(20);
   const [svgWidth, setSvgWidth] = useState('');
   const [svgHeight, setSvgHeight] = useState('');
   const [aspectLocked, setAspectLocked] = useState(true);
@@ -167,13 +166,10 @@ export default function App() {
   const contours = figures.flatMap(figure => figure.contours);
   const measurementTargets = useMemo(() => buildMeasurementTargets(figures), [figures]);
   const selectedFigure = measurementTargets.find(figure => figure.id === selectedFigureId);
-  const pigtailGapLimitCm = [leftPigtail, rightPigtail].every(value => value !== '' && Number.isFinite(Number(value)) && Number(value) >= 0)
-    ? Number(leftPigtail) + Number(rightPigtail) : null;
-  useEffect(() => {
-    if (pigtailGapLimitCm !== null && minimumDesiredGap !== '' && Number.isFinite(Number(minimumDesiredGap)) && Number(minimumDesiredGap) > pigtailGapLimitCm) {
-      setMinimumDesiredGap(formatMeasure(pigtailGapLimitCm));
-    }
-  }, [minimumDesiredGap, pigtailGapLimitCm]);
+  const pigtailsValid = [leftPigtail, rightPigtail].every(value => value !== '' && Number.isFinite(Number(value)) && Number(value) >= 0);
+  const pigtailReachCm = pigtailsValid ? Number(leftPigtail) + Number(rightPigtail) : null;
+  const pigtailReachMm = pigtailReachCm === null ? null : mm(String(pigtailReachCm));
+  const minimumPigtailGapMm = pigtailsValid ? minimumPigtailSpacingMm(mm(leftPigtail), mm(rightPigtail)) : null;
   const partitionInputValid = minimumSectionWidth !== '' && Number.isFinite(Number(minimumSectionWidth)) && Number(minimumSectionWidth) >= 0;
   const needDistribution = showLedDistribution || showPigtails;
   const needPlacement = showLedRoutes || showSerpent || needDistribution;
@@ -216,8 +212,8 @@ export default function App() {
   const placement = useMemo((): LayoutPlacement | null => needPlacement && partitionInputValid && physicalSizeReady ? {
     config: { minimumSectionWidthMm: mm(minimumSectionWidth) },
     measurements: moduleGeometry ? { lengthMm: mm(moduleLength), widthMm: mm(moduleWidth), leftPigtailMm: mm(leftPigtail), rightPigtailMm: mm(rightPigtail) } : null,
-    options: { minimumGapMm: Math.min(mm(minimumDesiredGap), mm(leftPigtail) + mm(rightPigtail)), maximumGapMm: mm(leftPigtail) + mm(rightPigtail) },
-  } : null, [needPlacement, needDistribution, partitionInputValid, physicalSizeReady, moduleGeometry, moduleLength, moduleWidth, leftPigtail, rightPigtail, minimumSectionWidth, minimumDesiredGap]);
+    options: { minimumGapMm: minimumPigtailGapMm ?? 0, maximumGapMm: pigtailReachMm ?? 0 },
+  } : null, [needPlacement, needDistribution, partitionInputValid, physicalSizeReady, moduleGeometry, moduleLength, moduleWidth, leftPigtail, rightPigtail, minimumSectionWidth, minimumPigtailGapMm, pigtailReachMm]);
   const physicalWidth = physicalSizeReady ? mm(svgWidth) : null, physicalHeight = physicalSizeReady ? mm(svgHeight) : null;
   useEffect(() => {
     if (!needSkeleton) { setLayout(null); setLayoutPlanning(false); return; }
@@ -248,9 +244,9 @@ export default function App() {
     worker.onerror = () => { setSerpentPlanning(false); setError('No se pudo calcular el recorrido serpiente.'); worker.terminate(); };
     worker.postMessage({ model, divisions: serpentGuides, distribution: ledDistribution,
       measurements: { lengthMm: mm(moduleLength), widthMm: mm(moduleWidth), leftPigtailMm: mm(leftPigtail), rightPigtailMm: mm(rightPigtail) },
-      widthMm: mm(svgWidth), heightMm: mm(svgHeight), reservePercent, avoidModuleCollisions });
+      widthMm: mm(svgWidth), heightMm: mm(svgHeight), avoidModuleCollisions });
     return () => worker.terminate();
-  }, [reservePercent, avoidModuleCollisions, showPigtails, serpentGuides, ledDistribution, moduleGeometry, model, moduleLength, moduleWidth, leftPigtail, rightPigtail, svgWidth, svgHeight]);
+  }, [avoidModuleCollisions, showPigtails, serpentGuides, ledDistribution, moduleGeometry, model, moduleLength, moduleWidth, leftPigtail, rightPigtail, svgWidth, svgHeight]);
   const serpentBreakCount = serpents.reduce((total, serpent) => total + serpent.breaks.length, 0);
   const linkedTerminals = new Set(serpents.flatMap(serpent => serpent.links.flatMap(link => [`${link.fromId}:${link.fromSide}`, `${link.toId}:${link.toSide}`])));
   const wireScale = physicalSizeReady ? { x: mm(svgWidth) / model.viewBox.width, y: mm(svgHeight) / model.viewBox.height } : null;
@@ -402,13 +398,8 @@ export default function App() {
         <section className="panel-section wiring-section">
           <div className="section-heading"><h2>Pigtails y conexiones</h2></div>
           <label className="physical-filter"><input type="checkbox" checked={avoidModuleCollisions} onChange={event => setAvoidModuleCollisions(event.target.checked)} />Descartar conexiones que chocan con módulos LED</label>
-          <label className="minimum-gap-field">Reserva de cable <span><input aria-label="Reserva de cable en porcentaje" type="number" min="0" max="99" step="1" value={reservePercent} onChange={event => setReservePercent(Math.max(0, Math.min(99, Number(event.target.value) || 0)))} /><small>%</small></span></label>
-          <label className="minimum-gap-field">Separación mínima deseable entre módulos <span><input aria-label="Separación mínima deseable entre módulos" type="number" min="0" max={pigtailGapLimitCm ?? undefined} step="any" inputMode="decimal" value={minimumDesiredGap} onChange={event => {
-            const value = event.target.value;
-            const numericValue = Number(value);
-            setMinimumDesiredGap(value !== '' && pigtailGapLimitCm !== null && Number.isFinite(numericValue)
-              ? String(Math.min(numericValue, pigtailGapLimitCm)) : value);
-          }} /><small>cm</small></span></label>
+          <label className="minimum-gap-field">Separación mínima automática (pigtails − 1 cm) <span><output aria-label="Separación mínima automática entre módulos">{minimumPigtailGapMm === null ? '—' : formatCm(minimumPigtailGapMm)}</output><small>cm</small></span></label>
+          <small className="spacing-hint">Los módulos con menos separación se omiten del recorrido.</small>
         </section>
 
         <section className="panel-section module-section">

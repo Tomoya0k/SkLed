@@ -89,11 +89,14 @@ function sourceSpans(edge: GuideEdge, from: number, to: number): SkeletonSpan[] 
   return spans;
 }
 
-/** Corner spokes describe the medial graph, but are not independent candidate rows.
- * Join the remaining degree-two edges before offsetting so corners have one tangent. */
+/** Keep original junctions as guide boundaries after pruning corner spokes.
+ * A pruned spoke must not turn a junction into a false degree-two continuation. */
 function guideEdges(skeleton: SkeletonResult): GuideEdge[] {
   const nodes = new Map(skeleton.nodes.map(node => [node.id, node]));
   const edges = usefulSkeletonEdges(skeleton);
+  const originalIncident = new Map<string, SkeletonEdge[]>();
+  for (const edge of skeleton.edges) for (const id of [edge.from, edge.to]) if (id) originalIncident.set(id, [...(originalIncident.get(id) ?? []), edge]);
+  const originalDegree = (id: string | null) => id ? originalIncident.get(id)?.length ?? 0 : 0;
   const incident = new Map<string, SkeletonEdge[]>();
   for (const edge of edges) for (const id of [edge.from, edge.to]) if (id) incident.set(id, [...(incident.get(id) ?? []), edge]);
   const used = new Set<string>(), guides: GuideEdge[] = [];
@@ -115,7 +118,7 @@ function guideEdges(skeleton: SkeletonResult): GuideEdge[] {
       end = forward ? current.to : current.from;
       if (current.closed || (end && end === start)) { closed = true; break; }
       const next = end ? incident.get(end) ?? [] : [];
-      if (next.length !== 2) break;
+      if (originalDegree(end) !== 2 || next.length !== 2) break;
       const continuation = next.find(edge => !used.has(edge.id));
       if (!continuation) break;
       node = end; current = continuation;
@@ -124,7 +127,7 @@ function guideEdges(skeleton: SkeletonResult): GuideEdge[] {
     let guide: GuideEdge = { ...seed, from: start, to: end, points, closed, sourceSections, sourceOffset: 0 };
     if (!closed) {
       const line = polyline(guide);
-      const trim = (id: string | null) => id && (incident.get(id)?.length ?? 0) > 2 ? (nodes.get(id)?.radius ?? 0) * 0.8 : 0;
+      const trim = (id: string | null) => id && originalDegree(id) > 2 ? (nodes.get(id)?.radius ?? 0) * 0.8 : 0;
       const from = trim(start), to = line.length - trim(end);
       if (to <= from) return;
       if (from || to < line.length) {
@@ -134,8 +137,8 @@ function guideEdges(skeleton: SkeletonResult): GuideEdge[] {
     guides.push(guide);
   };
   for (const edge of edges) if (!edge.closed) {
-    if (!edge.from || incident.get(edge.from)?.length !== 2) walk(edge, edge.from);
-    else if (!edge.to || incident.get(edge.to)?.length !== 2) walk(edge, edge.to);
+    if (!edge.from || originalDegree(edge.from) !== 2) walk(edge, edge.from);
+    else if (!edge.to || originalDegree(edge.to) !== 2) walk(edge, edge.to);
   }
   for (const edge of edges) walk(edge, edge.from);
   return guides;

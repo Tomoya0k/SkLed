@@ -3,6 +3,7 @@ import { createModuleGeometry } from './module';
 import type { ModuleMeasurements } from './module';
 import type { Point, SvgModel } from './types';
 import { pathData } from './regions';
+import { minimumPigtailSpacingMm } from './pigtail-spacing';
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -218,15 +219,12 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
   const rowBreaks: NonNullable<LedDistributionResult['rowBreaks']> = [];
   const routeRuns: NonNullable<LedDistributionResult['routeRuns']> = [];
   const lengthMm = geometry.body.lengthMm, bodyWidthMm = geometry.widthMm;
-  // A conservative gap estimate: each side must be long enough on its own.
-  // Do not add both pigtails or infer a valid electrical connection.
-  const gapBudgetMm = Math.min(geometry.leftPigtail.lengthMm, geometry.rightPigtail.lengthMm);
-  const minimumGap = options.minimumGapMm ?? 0;
+  const minimumGap = Math.max(minimumPigtailSpacingMm(geometry.leftPigtail.lengthMm, geometry.rightPigtail.lengthMm), options.minimumGapMm ?? 0);
   const maximumGap = options.maximumGapMm ?? Infinity;
   const bodyGap = options.bodyGapMm ?? 0;
   const clearance = options.edgeMarginMm ?? Math.min(0.2, bodyWidthMm * 0.05);
   if (![minimumGap, bodyGap, clearance].every(n => Number.isFinite(n) && n >= 0) || !(maximumGap >= minimumGap)) throw new Error('Revisa la separación mínima, máxima y el margen de los módulos.');
-  const desiredGap = Math.max(minimumGap, Math.min(maximumGap, gapBudgetMm));
+  const desiredGap = minimumGap;
   // Fit the central terminal branches first so a paired lane cannot crowd a tip.
   const lane = (path: DivisionPath) => (path as DivisionPath & { lane?: number }).lane;
   const paths = [...divisions.paths].sort((a, b) => Number(!!lane(a)) - Number(!!lane(b)));
@@ -247,15 +245,10 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
     const fitsGuide = (position: number) => route.closed || (division.bodyFiltered || candidateGuide
       ? position >= lengthMm / 2 - 1e-6 && position <= route.length - lengthMm / 2 + 1e-6
       : position >= 0 && position <= route.length);
-    const sameRow = (a: Rectangle, b: Rectangle, other: DivisionPath) => {
-      if (division.id === other.id) return true;
-      const dx = a.center.x - b.center.x, dy = a.center.y - b.center.y;
-      return Math.abs(a.tangent.x * b.tangent.x + a.tangent.y * b.tangent.y) > 0.85 && Math.abs(dx * a.tangent.y - dy * a.tangent.x) < bodyWidthMm * 0.9;
-    };
     type Proposal = { rectangle: Rectangle; position: number };
     const valid = (candidate: Rectangle, local: Proposal[]) => insideRegion(candidate, region, clearance) &&
       !placed.some(other => (!options.independentPaths || other.division.id === division.id) &&
-        (overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < (sameRow(candidate, other.rectangle, other.division) ? Math.max(bodyGap, minimumGap) : bodyGap))) &&
+        (overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < Math.max(bodyGap, minimumGap))) &&
       !local.some(other => overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < Math.max(bodyGap, minimumGap));
     let best: Proposal[] = [];
     for (const phase of [0, 0.15, -0.15]) {

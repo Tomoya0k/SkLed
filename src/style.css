@@ -41,7 +41,9 @@ h1, h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .minimum-gap-field { display: grid; gap: 7px; color: #b7ccba; font-size: 11px; }
 .minimum-gap-field > span { display: flex; align-items: center; border: 1px solid #32523b; border-radius: 4px; overflow: hidden; background: #0d1912; }
 .minimum-gap-field input { width: 100%; min-width: 0; color: #effff2; padding: 8px 10px; background: transparent; border: 0; font: 12px ui-monospace, monospace; }
+.minimum-gap-field output { width: 100%; min-width: 0; color: #effff2; padding: 8px 10px; font: 12px ui-monospace, monospace; }
 .minimum-gap-field small { font: 10px ui-monospace, monospace; color: #9ab4a0; padding: 0 10px; }
+.spacing-hint { display: block; margin-top: 7px; color: #9ab4a0; font-size: 10px; line-height: 1.45; }
 .main-panel { min-width: 0; padding: 23px; display: flex; flex-direction: column; gap: 16px; }
 .layer-controls { display: grid; gap: 10px; }
 .loading-indicator { display: grid; gap: 7px; color: #bbabd4; font-size: 11px; }

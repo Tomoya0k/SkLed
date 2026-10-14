@@ -41,7 +41,13 @@ export function planSerpent(model: SvgModel, divisions: DivisionResult, distribu
   const groups = new Map<string, LedPlacement[]>();
   for (const module of modules) { const row = module.rowRunId ?? module.divisionId; groups.set(row, [...(groups.get(row) ?? []), module]); }
   for (const group of groups.values()) group.sort((a, b) => (a.positionMm ?? a.number) - (b.positionMm ?? b.number));
-  const longest = [...groups.values()].sort((a, b) => b.length - a.length || a[0].number - b[0].number)[0];
+  const pathOrigins = new Map((divisions.paths ?? []).map(path => [path.id, (path as typeof path & { origin?: string }).origin]));
+  const phaseFor = (module: LedPlacement): 0 | 1 => pathOrigins.get(module.divisionId) === 'partition' ? 0 : 1;
+  const partitionGroups = [...groups.values()].filter(group => phaseFor(group[0]) === 0);
+  // Start on a partida when the user has not pinned a start so its rows are
+  // completed before the planner enters the skeleton phase.
+  const longest = [...(partitionGroups.length ? partitionGroups : groups.values())]
+    .sort((a, b) => b.length - a.length || a[0].number - b[0].number)[0];
   const start = modules.find(module => module.id === options.startId) ?? longest.find(module => module.id !== options.endId) ?? longest[0];
   const end = modules.find(module => module.id === options.endId && module.id !== start.id) ?? null;
   const regions = (divisions.regions ?? buildRegions(model.figures).regions).filter(region => region.id === options.scopeId || (!modules[0].regionId && region.figureId === modules[0].figureId));
@@ -67,39 +73,56 @@ export function planSerpent(model: SvgModel, divisions: DivisionResult, distribu
   };
   // Removing the two anchors splits a row only where the user picked an
   // interior LED. Each remaining segment retains its actual guide order.
-  const pending: LedPlacement[][] = [];
+  const pending: Array<{ modules: LedPlacement[]; phase: 0 | 1 }> = [];
   for (const group of groups.values()) {
     let run: LedPlacement[] = [];
     for (const module of group) {
-      if (module.id === start.id || module.id === end?.id) { if (run.length) pending.push(run); run = []; }
+      if (module.id === start.id || module.id === end?.id) { if (run.length) pending.push({ modules: run, phase: phaseFor(run[0]) }); run = []; }
       else run.push(module);
     }
-    if (run.length) pending.push(run);
+    if (run.length) pending.push({ modules: run, phase: phaseFor(run[0]) });
   }
   const blocks: LedPlacement[][] = [[start]];
+  const blockPhases: Array<0 | 1> = [phaseFor(start)];
+  let currentPhase = phaseFor(start);
   while (pending.length) {
     const current = blocks.at(-1)!.at(-1)!;
-    let bestIndex = 0, reverse = false, bestCost = Infinity;
-    pending.forEach((run, index) => {
+    const eligible = pending.filter(run => run.phase >= currentPhase);
+    const candidates = eligible.length ? eligible : pending;
+    const phase = Math.min(...candidates.map(run => run.phase)) as 0 | 1;
+    let bestIndex = -1, reverse = false, bestCost = Infinity;
+    pending.forEach((item, index) => {
+      if (item.phase !== phase) return;
+      const run = item.modules;
       for (const backwards of [false, true]) {
         const first = backwards ? run.at(-1)! : run[0];
         const cost = Math.min(...sides.flatMap(from => sides.map(to => connectionCost(current, first, router(current, from, first, to))))) + (current.divisionId === first.divisionId ? 0 : measurements.lengthMm);
         if (cost < bestCost) { bestCost = cost; bestIndex = index; reverse = backwards; }
       }
     });
-    const run = pending.splice(bestIndex, 1)[0];
+    const run = pending.splice(bestIndex, 1)[0].modules;
     blocks.push(reverse ? [...run].reverse() : run);
+    blockPhases.push(phase);
+    currentPhase = phase;
   }
-  if (end) blocks.push([end]);
+  if (end) { blocks.push([end]); blockPhases.push(phaseFor(end)); }
   let bestCost = evaluate(blocks.flat()).cost;
   // Reverse whole row blocks, never scramble their LEDs into cross-lane zigzags.
   for (let pass = 0; pass < 8; pass++) {
     let improved = false;
     const stop = blocks.length - (end ? 1 : 0);
     for (let i = 1; i < stop; i++) for (let j = i; j < stop; j++) {
+      // Keep the partition rows together; only optimize row order within a
+      // phase so partition-to-skeleton links cannot be interleaved.
+      if (blockPhases.slice(i, j + 1).some(phase => phase !== blockPhases[i])) continue;
       const proposed = [...blocks.slice(0, i), ...blocks.slice(i, j + 1).reverse().map(run => [...run].reverse()), ...blocks.slice(j + 1)];
       const cost = evaluate(proposed.flat()).cost;
-      if (cost + 1e-6 < bestCost) { blocks.splice(0, blocks.length, ...proposed); bestCost = cost; improved = true; }
+      if (cost + 1e-6 < bestCost) {
+        const proposedPhases = [...blockPhases.slice(0, i), ...blockPhases.slice(i, j + 1).reverse(), ...blockPhases.slice(j + 1)];
+        blocks.splice(0, blocks.length, ...proposed);
+        blockPhases.splice(0, blockPhases.length, ...proposedPhases);
+        bestCost = cost; improved = true;
+      }
     }
     if (!improved) break;
   }
@@ -114,7 +137,7 @@ export function planSerpent(model: SvgModel, divisions: DivisionResult, distribu
     entries[i] = side;
     if (i > 0) {
       const link = chosenLinks[i][side];
-      if (link) links.unshift({ ...link, id: `serpent-link-${i}` });
+      if (link) links.unshift({ ...link, id: `serpent-link-${options.scopeId}-${i}` });
       else missing.unshift({ fromId: ordered[i - 1].id, toId: ordered[i].id, from: terminal(ordered[i - 1], opposite(sides[previous[i][side]])), to: terminal(ordered[i], sides[side]), reason: `Pendiente: no se encontró una ruta libre dentro del alcance de los pigtails (máximo ${measurements.leftPigtailMm + measurements.rightPigtailMm} mm).` });
       side = previous[i][side];
     }
