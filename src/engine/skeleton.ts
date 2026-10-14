@@ -68,6 +68,60 @@ function simplify(points: Point[], tolerance: number): Point[] {
   return [...keepIndices].sort((a, b) => a - b).map(i => points[i]);
 }
 
+function edgeLength(edge: SkeletonEdge): number {
+  return edge.points.slice(1).reduce((sum, point, index) => sum + pointDistance(point, edge.points[index]), 0);
+}
+
+function pointAlong(edge: SkeletonEdge, fraction: number, total = edgeLength(edge)): Point {
+  let remaining = total * fraction;
+  for (let i = 1; i < edge.points.length; i++) {
+    const a = edge.points[i - 1], b = edge.points[i], length = pointDistance(a, b);
+    if (remaining <= length) {
+      const t = length ? remaining / length : 0;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    }
+    remaining -= length;
+  }
+  return edge.points.at(-1)!;
+}
+
+/** Drop duplicate paths caused by adjacent raster pixels around the same junction.
+ * Distinct junction-to-junction spans and closed cycles remain untouched. */
+export function deduplicateRasterEdges(edges: SkeletonEdge[], resolution: number): SkeletonEdge[] {
+  const retained: SkeletonEdge[] = [];
+  const lengths = new Map<string, number>();
+  const indexesByEndpoints = new Map<string, number[]>();
+  const pathTolerance = resolution * 2.5, lengthTolerance = resolution * 4;
+  const endpointKey = (edge: SkeletonEdge) => [edge.from!, edge.to!].sort().join('|');
+  const duplicates = (a: SkeletonEdge, b: SkeletonEdge) => {
+    if (a.closed || b.closed || !a.from || !a.to || !b.from || !b.to) return false;
+    const sameDirection = a.from === b.from && a.to === b.to;
+    if (!sameDirection && !(a.from === b.to && a.to === b.from)) return false;
+    const aLength = lengths.get(a.id) ?? edgeLength(a), bLength = lengths.get(b.id) ?? edgeLength(b);
+    if (Math.abs(aLength - bLength) > lengthTolerance) return false;
+    for (let i = 0; i <= 8; i++) {
+      const fraction = i / 8;
+      const otherFraction = sameDirection ? fraction : 1 - fraction;
+      if (pointDistance(pointAlong(a, fraction, aLength), pointAlong(b, otherFraction, bLength)) > pathTolerance) return false;
+    }
+    return true;
+  };
+
+  for (const edge of edges) {
+    const length = edgeLength(edge);
+    lengths.set(edge.id, length);
+    if (edge.closed || !edge.from || !edge.to) { retained.push(edge); continue; }
+    const key = endpointKey(edge), candidates = indexesByEndpoints.get(key) ?? [];
+    const duplicateIndex = candidates.find(index => duplicates(retained[index], edge));
+    if (duplicateIndex === undefined) {
+      indexesByEndpoints.set(key, [...candidates, retained.length]);
+      retained.push(edge);
+    }
+    else if (length < (lengths.get(retained[duplicateIndex].id) ?? Infinity)) retained[duplicateIndex] = edge;
+  }
+  return retained;
+}
+
 function medialMask(mask: Uint8Array, columns: number, distance: Float64Array): Uint8Array {
   const result = mask.slice(), offsets = [-columns - 1, -columns, -columns + 1, -1, 0, 1, columns - 1, columns, columns + 1];
   const patternAt = (index: number, pixels: Uint8Array) => offsets.reduce((pattern, offset, bit) => pattern | ((pixels[index + offset] ?? 0) << bit), 0);
@@ -160,7 +214,9 @@ function vectorize(region: GeometryRegion, scale: GeometryScale, step: number): 
     // A medial cycle must surround an actual hole. Pixel clusters at junctions can
     // leave tiny self-loops; they are numerical artifacts, not figure topology.
     if (closed && !region.holes.some(hole => polygonContains(hole[0], line))) return;
-    const simplified = simplify(closed ? [...line, line[0]] : line, step * 0.6);
+    // Keep smoothing below one raster cell so it removes subpixel noise without
+    // shifting narrow medial axes enough to collapse their candidate guides.
+    const simplified = simplify(closed ? [...line, line[0]] : line, step * 0.8);
     if (closed) simplified.pop();
     edges.push({ id: `${region.id}-edge-${edges.length}`, regionId: region.id, figureId: region.figureId,
       from: from?.id ?? null, to: to?.id ?? null, points: simplified, closed, d: pathData(simplified.map(p => unscalePoint(p, scale)), closed) });
@@ -170,8 +226,9 @@ function vectorize(region: GeometryRegion, scale: GeometryScale, step: number): 
     if (!used.has(key(i, j))) walk(i, j, node);
   }
   for (const i of ids) for (const j of adjacency.get(i)!) if (!used.has(key(i, j))) walk(i, j, null);
-  const referenced = new Set(edges.flatMap(e => [e.from, e.to]));
-  return { nodes: nodes.filter(n => n.kind === 'point' || referenced.has(n.id)), edges };
+  const cleanEdges = deduplicateRasterEdges(edges, step);
+  const referenced = new Set(cleanEdges.flatMap(e => [e.from, e.to]));
+  return { nodes: nodes.filter(n => n.kind === 'point' || referenced.has(n.id)), edges: cleanEdges };
 }
 
 export function generateSkeleton(model: SvgModel, physicalSize?: { widthMm: number; heightMm: number }, prepared?: ReturnType<typeof buildRegions>): SkeletonResult {

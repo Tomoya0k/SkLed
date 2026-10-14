@@ -70,7 +70,7 @@ test('module dimensions stay physical when SVG width and height use different sc
 test('LED layer waits for physical dimensions and reacts to module sizes and partitions', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('Cargar archivo SVG').setInputFiles({ name: 'aro.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(ringSvg) });
-  await page.getByRole('checkbox', { name: 'MÓDULOS LED' }).check();
+  await page.getByRole('checkbox', { name: 'MÓDULOS LED', exact: true }).check();
   await expect(page.locator('.geometry-status')).toContainText('Indica ancho y alto del SVG');
   await page.getByLabel('Ancho del SVG').fill('24');
   await page.getByLabel('Largo del módulo').fill('1.2');
@@ -107,7 +107,7 @@ test('PARTIDAS shows candidate guides without placing LEDs and stays independent
   const candidateCount = await routes.count();
   expect(candidateCount).toBeGreaterThan(0);
 
-  await page.getByRole('checkbox', { name: 'MÓDULOS LED' }).check();
+  await page.getByRole('checkbox', { name: 'MÓDULOS LED', exact: true }).check();
   await expect(modules.first()).toBeVisible();
   await expect(routes).toHaveCount(candidateCount);
   const routesAreUnderModules = await page.locator('.drawing').evaluate(svg => {
@@ -122,6 +122,26 @@ test('PARTIDAS shows candidate guides without placing LEDs and stays independent
   await expect(modules).toHaveCount(moduleCount);
 });
 
+test('PARTIDAS hides guides where the configured LED body cannot fit', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Cargar archivo SVG').setInputFiles({
+    name: 'bandas-de-ancho-distinto.svg', mimeType: 'image/svg+xml',
+    buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 60" width="320mm" height="60mm"><rect x="0" y="0" width="140" height="40"/><rect x="170" y="0" width="140" height="10"/></svg>'),
+  });
+  await page.getByLabel('Largo del módulo').fill('7');
+  await page.getByLabel('Ancho del módulo').fill('1.5');
+  await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('3');
+  await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('3');
+  await page.getByRole('checkbox', { name: 'PARTIDAS', exact: true }).check();
+
+  const routes = page.locator('[data-led-route]');
+  await expect(routes.first()).toBeVisible({ timeout: 30_000 });
+  const ids = await routes.evaluateAll(nodes => nodes.map(node => node.getAttribute('data-led-route') ?? ''));
+  expect(ids.some(id => id.includes('figure-1'))).toBe(true);
+  expect(ids.some(id => id.includes('figure-2'))).toBe(false);
+  await expect(page.locator('.division-hint')).toContainText('no cabe físicamente el cuerpo de un módulo LED');
+});
+
 test('keeps placed modules from every SVG figure without a figure list', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('Cargar archivo SVG').setInputFiles({
@@ -132,7 +152,7 @@ test('keeps placed modules from every SVG figure without a figure list', async (
   await page.getByLabel('Ancho del módulo').fill('0.5');
   await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('0.4');
   await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('0.4');
-  await page.getByRole('checkbox', { name: 'MÓDULOS LED' }).check();
+  await page.getByRole('checkbox', { name: 'MÓDULOS LED', exact: true }).check();
   const modules = page.locator('[data-led-module]');
   await expect(modules.first()).toBeVisible();
   expect(await modules.count()).toBeGreaterThan(0);

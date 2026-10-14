@@ -76,7 +76,8 @@ test('large SVG calculations can be cancelled without freezing the controls', as
   await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('3'); await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('3');
   const toggle = page.getByRole('checkbox', { name: 'RECORRIDO SERPIENTE', exact: true });
   await toggle.check({ timeout: 2000 });
-  await expect(page.locator('.geometry-status')).toContainText('Calculando recorridos candidatos');
+  await expect(page.locator('.loading-indicator')).toContainText('Calculando recorridos candidatos');
+  await expect(page.getByRole('progressbar')).toBeVisible();
   await toggle.uncheck({ timeout: 2000 });
   await expect(toggle).not.toBeChecked();
   await expect(page.locator('.geometry-status')).toHaveCount(0);
@@ -123,9 +124,11 @@ test('snake honors both chosen endpoints, visits one figure once, and never reus
 
 test('snake combines geometric guides independently of module parameters and layers', async ({ page }) => {
   await page.goto('/');
-  await page.getByLabel('Cargar archivo SVG').setInputFiles({ name: 'figuras.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(drawing) });
+  const mixedGuides = '<svg xmlns="http://www.w3.org/2000/svg" width="460mm" height="90mm" viewBox="0 0 460 90"><path d="M5 5H205V85H5Z M255 35H455V55H255Z"/></svg>';
+  await page.getByLabel('Cargar archivo SVG').setInputFiles({ name: 'figuras.svg', mimeType: 'image/svg+xml', buffer: Buffer.from(mixedGuides) });
   await page.getByLabel('Largo del módulo').fill('');
   await page.getByLabel('Ancho del módulo').fill('');
+  await page.getByLabel('Distancia mínima entre skeleton y borde para formar una partida', { exact: true }).fill('1.5');
   const snake = page.getByRole('checkbox', { name: 'RECORRIDO SERPIENTE', exact: true });
   const leds = page.getByRole('checkbox', { name: 'MÓDULOS LED', exact: true });
   await snake.check();

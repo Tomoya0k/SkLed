@@ -220,7 +220,7 @@ test('obsolete layers are absent while module placement still uses partition set
   await page.getByLabel('Ancho del módulo').fill('0.5');
   await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('0.4');
   await page.getByRole('spinbutton', { name: 'Pigtail derecho', exact: true }).fill('0.4');
-  await page.getByRole('checkbox', { name: 'MÓDULOS LED' }).check();
+  await page.getByRole('checkbox', { name: 'MÓDULOS LED', exact: true }).check();
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
   await expect(page.getByLabel('Distancia mínima entre skeleton y borde para formar una partida')).toHaveValue('0');
   await expect(page.locator('[data-led-module]').first()).toBeVisible();

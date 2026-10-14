@@ -1,6 +1,24 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
+test('candidate guides that cross are discarded without affecting other regions', async ({ page }) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const modulePath = '/src/engine/partitions.ts';
+    const { filterCrossingPartitionPaths } = await import(modulePath);
+    const path = (id: string, regionId: string, points: Array<{x:number;y:number}>) => ({ id, regionId, points, closed: false });
+    const filtered = filterCrossingPartitionPaths([
+      path('crossing-a', 'same-region', [{x:0,y:0},{x:10,y:10}]),
+      path('crossing-b', 'same-region', [{x:0,y:10},{x:10,y:0}]),
+      path('other-region', 'separate-region', [{x:0,y:10},{x:10,y:0}]),
+      path('endpoint-touch', 'same-region', [{x:10,y:10},{x:15,y:15}]),
+    ] as any);
+    return { ids: filtered.paths.map((candidate: {id:string}) => candidate.id), removed: filtered.removed };
+  });
+  expect(result.ids).toEqual(['other-region', 'endpoint-touch']);
+  expect(result.removed).toBe(2);
+});
+
 for (const minimum of [0, 100]) test(`letter candidates have no crossing or corner spokes at minimum ${minimum} mm`, async ({ page }) => {
   await page.goto('/');
   const source = readFileSync(new URL('./fixtures/01-letras-3d.svg', import.meta.url), 'utf8');

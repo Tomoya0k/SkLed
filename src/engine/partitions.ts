@@ -178,6 +178,62 @@ function cleanGuide(input: Point[], closed: boolean, tolerance: number): Point[]
   return points;
 }
 
+/** Remove candidate guides that cross another guide inside the same geometry region. */
+export function filterCrossingPartitionPaths(paths: PartitionPath[]): { paths: PartitionPath[]; removed: number } {
+  let pointCount = 0, minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const path of paths) for (const point of path.points) {
+    pointCount++;
+    minX = Math.min(minX, point.x); maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y); maxY = Math.max(maxY, point.y);
+  }
+  if (pointCount < 4) return { paths, removed: 0 };
+  const cellSize = Math.max(maxX - minX, maxY - minY, 1e-6) / 512;
+  const buckets = new Map<string, number[]>(), checked = new Set<string>(), crossingPaths = new Set<number>();
+  const segments: Array<{ path: number; index: number; count: number; closed: boolean; regionId: string; a: Point; b: Point; minX: number; maxX: number; minY: number; maxY: number }> = [];
+  const crossAt = (a: Point, b: Point, c: Point, d: Point) => {
+    const ux = b.x - a.x, uy = b.y - a.y, vx = d.x - c.x, vy = d.y - c.y;
+    const denominator = ux * vy - uy * vx;
+    if (Math.abs(denominator) < 1e-10) return false;
+    const dx = c.x - a.x, dy = c.y - a.y;
+    const t = (dx * vy - dy * vx) / denominator, u = (dx * uy - dy * ux) / denominator;
+    return t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6;
+  };
+
+  for (let pathIndex = 0; pathIndex < paths.length; pathIndex++) {
+    const path = paths[pathIndex], points = path.closed ? [...path.points, path.points[0]] : path.points;
+    const count = points.length - 1;
+    for (let index = 0; index < count; index++) {
+      const a = points[index], b = points[index + 1];
+      const segment = { path: pathIndex, index, count, closed: path.closed, regionId: path.regionId, a, b,
+        minX: Math.min(a.x, b.x), maxX: Math.max(a.x, b.x), minY: Math.min(a.y, b.y), maxY: Math.max(a.y, b.y) };
+      const id = segments.length, x0 = Math.floor(segment.minX / cellSize), x1 = Math.floor(segment.maxX / cellSize);
+      const y0 = Math.floor(segment.minY / cellSize), y1 = Math.floor(segment.maxY / cellSize), candidates = new Set<number>();
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (const other of buckets.get(`${x},${y}`) ?? []) candidates.add(other);
+      for (const otherId of candidates) {
+        const other = segments[otherId];
+        if (other.regionId !== segment.regionId) continue;
+        if (other.path === segment.path) {
+          const adjacent = Math.abs(other.index - segment.index) <= 1 ||
+            (segment.closed && Math.abs(other.index - segment.index) === segment.count - 1);
+          if (adjacent) continue;
+        }
+        const pair = `${Math.min(id, otherId)}:${Math.max(id, otherId)}`;
+        if (checked.has(pair)) continue;
+        checked.add(pair);
+        if (crossAt(other.a, other.b, segment.a, segment.b)) {
+          crossingPaths.add(other.path); crossingPaths.add(segment.path);
+        }
+      }
+      segments.push(segment);
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+        const key = `${x},${y}`, bucket = buckets.get(key) ?? [];
+        bucket.push(id); buckets.set(key, bucket);
+      }
+    }
+  }
+  return { paths: paths.filter((_, index) => !crossingPaths.has(index)), removed: crossingPaths.size };
+}
+
 /** Create candidate guides halfway from the medial skeleton to each nearest boundary. */
 export function generatePartitions(skeleton: SkeletonResult, config: PartitionConfig = {}): PartitionResult {
   const minimumSectionWidthMm = config.minimumSectionWidthMm ?? 0;
@@ -253,6 +309,9 @@ export function generatePartitions(skeleton: SkeletonResult, config: PartitionCo
       }
     }
   }
+  const crossingFree = filterCrossingPartitionPaths(result.paths);
+  result.paths = crossingFree.paths;
+  if (crossingFree.removed) result.warnings.push(`${crossingFree.removed} partida(s) eliminada(s): las guías se cruzaban entre sí.`);
   result.pairs = result.paths.filter(path => path.lane === -1).length;
   return result;
 }

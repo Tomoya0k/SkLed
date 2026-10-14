@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { buildMeasurementTargets, createModuleGeometry, parseSvg } from './engine';
 import type { Bounds, ConnectionLink, LedPlacement, Point, SvgModel, SerpentResult, SkeletonResult, TerminalSide } from './engine';
+import { usefulSkeletonEdges } from './engine/skeleton-filter';
 import { pathData } from './engine/regions';
 import type { LayoutResult, LayoutPlacement } from './engine/layout.worker';
 
@@ -177,8 +178,12 @@ export default function App() {
   const needDistribution = showLedDistribution || showPigtails;
   const needPlacement = showLedRoutes || showSerpent || needDistribution;
   const needSkeleton = !!filename && (showSkeleton || needPlacement);
+  const loadingLabel = reading ? 'Procesando archivo…'
+    : layoutPlanning ? `Calculando recorridos candidatos${needDistribution ? ' y distribución LED' : ''}…`
+      : serpentPlanning ? 'Calculando conexiones de pigtails…' : null;
   const physicalSizeReady = svgWidth !== '' && svgHeight !== '' && mm(svgWidth) > 0 && mm(svgHeight) > 0 && Number.isFinite(mm(svgWidth)) && Number.isFinite(mm(svgHeight));
   const skeleton = needSkeleton ? layout?.skeleton : null;
+  const visibleSkeletonEdges = useMemo(() => skeleton ? usefulSkeletonEdges(skeleton) : [], [skeleton]);
   const divisions = needPlacement ? layout?.divisions : null;
   const serpentGuides = needPlacement ? layout?.serpentGuides : null;
   const ledDistribution = needDistribution ? layout?.distribution : null;
@@ -430,9 +435,11 @@ export default function App() {
             <label className={showPigtails ? 'active connection-toggle' : 'connection-toggle'}><input type="checkbox" checked={showPigtails} onChange={event => setShowPigtails(event.target.checked)} />PIGTAILS Y CONEXIONES</label>
           </div>
         </div>
+        {loadingLabel && <div className="loading-indicator" role="status">
+          <span>{loadingLabel}</span>
+          <div className="loading-track" role="progressbar" aria-label={loadingLabel} aria-valuetext="En curso"><span /></div>
+        </div>}
         {filename && (showSkeleton || needPlacement) && <div className="geometry-status">
-          {layoutPlanning && <span role="status">Calculando recorridos candidatos{needDistribution ? ' y distribución LED' : ''}…</span>}
-          {showPigtails && serpentPlanning && <span role="status">Calculando conexiones de pigtails…</span>}
           {showSkeleton && skeleton?.units === 'svg' && <span>Skeleton en unidades SVG · indica las medidas físicas para Partidas.</span>}
           {needPlacement && (!physicalSizeReady ? <span>Indica ancho y alto del SVG en cm.</span> : !partitionInputValid ? <span>Revisa el ancho mínimo local.</span> : needDistribution && !moduleGeometry ? <span>Completa largo, ancho y ambos pigtails del módulo.</span> : null)}
           {geometryWarnings.length > 0 && <details className="division-hint"><summary>{geometryWarnings.length} aviso(s) de geometría</summary><ul>{geometryWarnings.map(warning => <li key={warning}>{measurementText(warning)}</li>)}</ul></details>}
@@ -451,7 +458,7 @@ export default function App() {
               <path d={contour.d} fill="none" stroke="#59ff91" strokeWidth="1.9" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
             </g>)}
             {showContour && selectedFigure && <path data-selected-figure={selectedFigure.id} d={selectedFigure.d} fill="none" stroke="#ffbd61" strokeWidth="3" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
-            {showSkeleton && skeleton?.edges.map(edge => <path key={edge.id} data-skeleton-edge={edge.id} data-skeleton-closed={edge.closed} d={edge.d} className="skeleton-line" />)}
+            {showSkeleton && visibleSkeletonEdges.map(edge => <path key={edge.id} data-skeleton-edge={edge.id} data-skeleton-closed={edge.closed} d={edge.d} className="skeleton-line" />)}
             {showSkeleton && skeleton?.nodes.filter(node => node.kind === 'point').map(node => <circle key={node.id} data-skeleton-point={node.id} cx={node.point.x / skeleton.scale.x} cy={node.point.y / skeleton.scale.y} r={span * 0.004} className="skeleton-point"><title>Skeleton puntual · sin eje direccional</title></circle>)}
             {showLedRoutes && ledRoutes.map(path => <path key={path.id} data-led-route={path.divisionId} data-led-run={path.id} d={path.d} className="led-route"><title>Recorrido candidato a mitad entre el skeleton y el borde</title></path>)}
             {showSerpent && serpentGuides && [...new Set(serpentGuides.paths.map(path => path.regionId))].map(regionId => <g key={regionId} data-serpent-scope={regionId} aria-label="Guías del recorrido serpiente">

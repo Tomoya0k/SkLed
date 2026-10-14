@@ -9,7 +9,7 @@ import type { SvgModel } from './types';
 import type { buildRegions } from './regions';
 import { composeSerpentGuides } from './serpent-guides';
 import type { SerpentGuides } from './serpent-guides';
-import { filterSkeletonSpurs, MIN_SKELETON_SPUR_MM } from './skeleton-filter';
+import { filterSkeletonSpurs } from './skeleton-filter';
 
 export interface LayoutResult { skeleton: SkeletonResult; sourceSkeleton: SkeletonResult; divisions: PartitionResult | null; serpentGuides: SerpentGuides | null; distribution: LedDistributionResult | null }
 export interface LayoutPlacement { config: PartitionConfig; measurements: ModuleMeasurements | null; options: PlacementOptions }
@@ -19,7 +19,7 @@ self.onmessage = (event: MessageEvent<LayoutInput>) => {
   try {
     const { model, geometry, physicalSize, placement } = event.data;
     const sourceSkeleton = event.data.skeleton ?? generateSkeleton(model, physicalSize, geometry);
-    const skeleton = sourceSkeleton.units === 'mm' ? filterSkeletonSpurs(sourceSkeleton, MIN_SKELETON_SPUR_MM) : sourceSkeleton;
+    const skeleton = sourceSkeleton.units === 'mm' ? filterSkeletonSpurs(sourceSkeleton) : sourceSkeleton;
     let divisions = placement && physicalSize ? generatePartitions(skeleton, placement.config) : null;
     if (divisions && placement?.measurements && physicalSize) {
       const bodyOnly = { ...placement.measurements, leftPigtailMm: 0, rightPigtailMm: 0 };

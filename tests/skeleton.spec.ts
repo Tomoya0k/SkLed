@@ -1,5 +1,24 @@
 import { test, expect } from '@playwright/test';
 
+test('near-identical raster paths at a junction collapse while real spans and cycles remain', async ({ page }) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const skeletonModulePath = '/src/engine/skeleton.ts';
+    const { deduplicateRasterEdges } = await import(skeletonModulePath);
+    const edge = (id: string, from: string, to: string, points: Array<{x:number;y:number}>, closed = false) => ({
+      id, regionId: 'r', figureId: 'f', from, to, points, closed, d: '',
+    });
+    const edges = [
+      edge('centerline-a', 'j1', 'j2', [{x:0,y:0},{x:5,y:2},{x:10,y:0}]),
+      edge('centerline-b', 'j2', 'j1', [{x:10,y:0},{x:5,y:1},{x:0,y:0}]),
+      edge('separate-span', 'j1', 'j2', [{x:0,y:0},{x:5,y:8},{x:10,y:0}]),
+      edge('cycle', 'j3', 'j3', [{x:0,y:0},{x:4,y:4},{x:0,y:0}], true),
+    ];
+    return deduplicateRasterEdges(edges, 2).map((item: {id:string}) => item.id);
+  });
+  expect(result).toEqual(['centerline-b', 'separate-span', 'cycle']);
+});
+
 test('duplicate fill and stroke boundaries retain holes without solid skeleton overlays', async ({ page }) => {
   await page.goto('/');
   const result = await page.evaluate(async () => {
@@ -39,6 +58,48 @@ test('medial graph preserves real branches, a disk point and a ring cycle', asyn
   expect(results[1].nodes, JSON.stringify(results)).toEqual(['point']);
   expect(results[1].edges).toHaveLength(0);
   expect(results[2].edges.some((edge: {closed: boolean}) => edge.closed), JSON.stringify(results)).toBe(true);
+});
+
+test('spur pruning scales with local thickness and keeps cycles and spans between junctions', async ({ page }) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const skeletonFilterModule = '/src/engine/skeleton-filter.ts';
+    const { filterSkeletonSpurs } = await import(skeletonFilterModule);
+    const node = (id: string, kind: string, x: number, y: number, radius: number) => ({
+      id, regionId: 'r', figureId: 'f', kind, point: { x, y }, radius,
+    });
+    const edge = (id: string, from: string, to: string, a: {x:number;y:number}, b: {x:number;y:number}, closed = false) => ({
+      id, regionId: 'r', figureId: 'f', from, to, points: [a, b], closed, d: '',
+    });
+    const nodes = [
+      node('thick-junction', 'junction', 0, 0, 30), node('thick-tip', 'end', 50, 0, 0),
+      node('thin-junction', 'junction', 100, 0, 5), node('long-tip', 'end', 145, 0, 0),
+      node('j3', 'junction', 200, 0, 10), node('j4', 'junction', 220, 0, 10),
+      node('j3a', 'end', 200, 20, 0), node('j3b', 'end', 200, -20, 0),
+      node('j4a', 'end', 220, 20, 0), node('j4b', 'end', 220, -20, 0),
+      node('cycle', 'junction', 300, 0, 10),
+    ];
+    const edges = [
+      edge('short-relative-to-width', 'thick-junction', 'thick-tip', {x:0,y:0}, {x:50,y:0}),
+      edge('long-enough-terminal', 'thin-junction', 'long-tip', {x:100,y:0}, {x:145,y:0}),
+      edge('junction-span', 'j3', 'j4', {x:200,y:0}, {x:220,y:0}),
+      edge('j3-branch-a', 'j3', 'j3a', {x:200,y:0}, {x:200,y:20}),
+      edge('j3-branch-b', 'j3', 'j3b', {x:200,y:0}, {x:200,y:-20}),
+      edge('j4-branch-a', 'j4', 'j4a', {x:220,y:0}, {x:220,y:20}),
+      edge('j4-branch-b', 'j4', 'j4b', {x:220,y:0}, {x:220,y:-20}),
+      edge('closed-cycle', 'cycle', 'cycle', {x:300,y:0}, {x:305,y:5}, true),
+    ];
+    const skeleton = { nodes, edges, regions: [], scale: {x:1,y:1}, units: 'mm', resolution: 1, warnings: [] };
+    const filtered = filterSkeletonSpurs(skeleton as any);
+    return { retained: filtered.edges.map((item: {id:string}) => item.id), warnings: filtered.warnings };
+  });
+  expect(result.retained).toContain('long-enough-terminal');
+  expect(result.retained).toContain('junction-span');
+  expect(result.retained).toContain('closed-cycle');
+  expect(result.retained).not.toContain('short-relative-to-width');
+  expect(result.retained).not.toContain('j3-branch-a');
+  expect(result.retained).not.toContain('j3-branch-b');
+  expect(result.warnings.join(' ')).toContain('ajustado al grosor local');
 });
 
 test('candidate partidas stay halfway between the skeleton and both local boundaries', async ({ page }) => {
@@ -165,7 +226,7 @@ test('module settings leave the visible skeleton unchanged without a partition l
   await expect(page.locator('[data-led-module]').first()).toBeVisible();
   await expect(page.getByLabel('Máximo de recorridos')).toHaveCount(0);
   await page.getByRole('spinbutton', { name: 'Pigtail izquierdo', exact: true }).fill('4.5');
-  expect(await page.locator('[data-skeleton-edge]').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('d')))).toEqual(skeleton);
+  await expect.poll(() => page.locator('[data-skeleton-edge]').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('d'))), { timeout: 15_000 }).toEqual(skeleton);
   await page.getByLabel('Distancia mínima entre skeleton y borde para formar una partida').fill('2');
   await expect(page.locator('[data-partition]')).toHaveCount(0);
   await page.getByRole('checkbox',{name:'SKELETON',exact:true}).uncheck();

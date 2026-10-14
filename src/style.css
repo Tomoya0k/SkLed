@@ -44,6 +44,11 @@ h1, h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .minimum-gap-field small { font: 10px ui-monospace, monospace; color: #9ab4a0; padding: 0 10px; }
 .main-panel { min-width: 0; padding: 23px; display: flex; flex-direction: column; gap: 16px; }
 .layer-controls { display: grid; gap: 10px; }
+.loading-indicator { display: grid; gap: 7px; color: #bbabd4; font-size: 11px; }
+.loading-track { height: 5px; overflow: hidden; border-radius: 999px; background: #20342a; }
+.loading-track span { display: block; width: 38%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #24a95b, #64ff9e); animation: loading-sweep 1.2s ease-in-out infinite alternate; }
+@keyframes loading-sweep { from { transform: translateX(0); } to { transform: translateX(160%); } }
+@media (prefers-reduced-motion: reduce) { .loading-track span { width: 100%; animation: none; } }
 .geometry-status { display: grid; gap: 6px; color: #bbabd4; font-size: 11px; }
 .geometry-status:empty { display: none; }
 .geometry-status .division-hint { margin-top: 0; }
