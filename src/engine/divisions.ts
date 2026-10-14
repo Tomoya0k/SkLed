@@ -15,6 +15,10 @@ export interface DivisionPath {
   bodyFiltered?: boolean;
   /** Recovered terminal row, oriented from its junction toward its tip. */
   coverageBranch?: boolean;
+  /** One body-fitting LED near a terminal corner. */
+  cornerBranch?: boolean;
+  /** Central span joining two branching nodes; fit before its incident arms. */
+  junctionBridge?: boolean;
   /** Numerically traced line between both source boundaries, in SVG units. */
   d: string;
 }

@@ -171,13 +171,23 @@ export default function App() {
   const pigtailReachMm = pigtailReachCm === null ? null : mm(String(pigtailReachCm));
   const minimumPigtailGapMm = pigtailsValid ? minimumPigtailSpacingMm(mm(leftPigtail), mm(rightPigtail)) : null;
   const partitionInputValid = minimumSectionWidth !== '' && Number.isFinite(Number(minimumSectionWidth)) && Number(minimumSectionWidth) >= 0;
-  const needDistribution = showLedDistribution || showPigtails;
+  const moduleGeometry = useMemo(() => {
+    if ([moduleLength, moduleWidth, leftPigtail, rightPigtail].some(value => value === '')) return null;
+    try {
+      return createModuleGeometry({
+        lengthMm: mm(moduleLength), widthMm: mm(moduleWidth),
+        leftPigtailMm: mm(leftPigtail), rightPigtailMm: mm(rightPigtail),
+      });
+    } catch { return null; }
+  }, [moduleLength, moduleWidth, leftPigtail, rightPigtail]);
+  const physicalSizeReady = svgWidth !== '' && svgHeight !== '' && mm(svgWidth) > 0 && mm(svgHeight) > 0 && Number.isFinite(mm(svgWidth)) && Number.isFinite(mm(svgHeight));
+  const canCountLeds = !!filename && physicalSizeReady && partitionInputValid && !!moduleGeometry;
+  const needDistribution = showLedDistribution || showPigtails || canCountLeds;
   const needPlacement = showLedRoutes || showSerpent || needDistribution;
   const needSkeleton = !!filename && (showSkeleton || needPlacement);
   const loadingLabel = reading ? 'Procesando archivo…'
     : layoutPlanning ? `Calculando recorridos candidatos${needDistribution ? ' y distribución LED' : ''}…`
       : serpentPlanning ? 'Calculando conexiones de pigtails…' : null;
-  const physicalSizeReady = svgWidth !== '' && svgHeight !== '' && mm(svgWidth) > 0 && mm(svgHeight) > 0 && Number.isFinite(mm(svgWidth)) && Number.isFinite(mm(svgHeight));
   const skeleton = needSkeleton ? layout?.skeleton : null;
   const visibleSkeletonEdges = useMemo(() => skeleton ? usefulSkeletonEdges(skeleton) : [], [skeleton]);
   const divisions = needPlacement ? layout?.divisions : null;
@@ -200,15 +210,6 @@ export default function App() {
   const dimensionWidth = physicalSizeReady ? dimensionBounds.width * Number(svgWidth) / model.viewBox.width : dimensionBounds.width;
   const dimensionHeight = physicalSizeReady ? dimensionBounds.height * Number(svgHeight) / model.viewBox.height : dimensionBounds.height;
   const dimensionUnit = physicalSizeReady ? 'cm' : 'u SVG';
-  const moduleGeometry = useMemo(() => {
-    if ([moduleLength, moduleWidth, leftPigtail, rightPigtail].some(value => value === '')) return null;
-    try {
-      return createModuleGeometry({
-        lengthMm: mm(moduleLength), widthMm: mm(moduleWidth),
-        leftPigtailMm: mm(leftPigtail), rightPigtailMm: mm(rightPigtail),
-      });
-    } catch { return null; }
-  }, [moduleLength, moduleWidth, leftPigtail, rightPigtail]);
   const placement = useMemo((): LayoutPlacement | null => needPlacement && partitionInputValid && physicalSizeReady ? {
     config: { minimumSectionWidthMm: mm(minimumSectionWidth) },
     measurements: moduleGeometry ? { lengthMm: mm(moduleLength), widthMm: mm(moduleWidth), leftPigtailMm: mm(leftPigtail), rightPigtailMm: mm(rightPigtail) } : null,
@@ -426,6 +427,12 @@ export default function App() {
             <label className={showLedDistribution ? 'active led-toggle' : 'led-toggle'}><input type="checkbox" checked={showLedDistribution} onChange={event => setShowLedDistribution(event.target.checked)} />MÓDULOS LED</label>
             <label className={showSerpent ? 'active serpent-toggle' : 'serpent-toggle'}><input type="checkbox" checked={showSerpent} onChange={event => setShowSerpent(event.target.checked)} />RECORRIDO SERPIENTE</label>
             <label className={showPigtails ? 'active connection-toggle' : 'connection-toggle'}><input type="checkbox" checked={showPigtails} onChange={event => setShowPigtails(event.target.checked)} />PIGTAILS Y CONEXIONES</label>
+            <button type="button" className={`led-count-button led-toggle${showLedDistribution ? ' active' : ''}`}
+              aria-pressed={showLedDistribution} disabled={!canCountLeds || reading}
+              title={canCountLeds ? 'Mostrar u ocultar los módulos LED' : 'Carga un archivo y completa las medidas para calcular los LEDs'}
+              onClick={() => setShowLedDistribution(value => !value)}>
+              TOTAL LED <strong aria-live="polite">{reading || (canCountLeds && layoutPlanning) ? '…' : canCountLeds && ledDistribution ? ledDistribution.total.toLocaleString('es-MX') : '—'}</strong>
+            </button>
           </div>
         </div>
         {loadingLabel && <div className="loading-indicator" role="status">

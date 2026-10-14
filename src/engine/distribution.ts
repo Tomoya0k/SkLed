@@ -225,9 +225,11 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
   const clearance = options.edgeMarginMm ?? Math.min(0.2, bodyWidthMm * 0.05);
   if (![minimumGap, bodyGap, clearance].every(n => Number.isFinite(n) && n >= 0) || !(maximumGap >= minimumGap)) throw new Error('Revisa la separación mínima, máxima y el margen de los módulos.');
   const desiredGap = minimumGap;
-  // Fit the central terminal branches first so a paired lane cannot crowd a tip.
+  // Reserve junction bridges before their arms, then corner LEDs before lanes.
+  // Otherwise an arm's endpoint can block a complete row across the bridge.
   const lane = (path: DivisionPath) => (path as DivisionPath & { lane?: number }).lane;
-  const paths = [...divisions.paths].sort((a, b) => Number(!!lane(a)) - Number(!!lane(b)));
+  const priority = (path: DivisionPath) => path.junctionBridge ? 0 : path.cornerBranch ? 1 : lane(path) ? 3 : 2;
+  const paths = [...divisions.paths].sort((a, b) => priority(a) - priority(b));
   for (const division of paths) {
     const stat = stats.get(division.figureId);
     if (!stat) continue;
@@ -239,7 +241,7 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
       { outer: polygon(division.outerContourId), inner: division.innerContourId ? polygon(division.innerContourId) : null };
     // Floor preserves the desired gap. Ceil compressed a row below its own
     // pigtail spacing; independent slot shifts then compressed it further.
-    const slots = Math.max(1, Math.floor((route.length + (route.closed ? 0 : desiredGap)) / (lengthMm + desiredGap)));
+    const slots = division.cornerBranch ? 1 : Math.max(1, Math.floor((route.length + (route.closed ? 0 : desiredGap)) / (lengthMm + desiredGap)));
     const pitch = route.closed ? route.length / slots : slots > 1 ? (route.length - lengthMm) / (slots - 1) : route.length;
     const candidateGuide = lane(division) !== undefined && lane(division) !== 0;
     const fitsGuide = (position: number) => route.closed || (division.bodyFiltered || candidateGuide
@@ -254,7 +256,7 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
     for (const phase of [0, 0.15, -0.15]) {
       const proposals: Proposal[] = [];
       for (let slot = 0; slot < slots; slot++) {
-        const base = (route.closed ? (slot + 0.5) * pitch : slots === 1 ? route.length / 2 : lengthMm / 2 + slot * pitch) + phase * pitch;
+        const base = (division.cornerBranch ? route.length - lengthMm / 2 : route.closed ? (slot + 0.5) * pitch : slots === 1 ? route.length / 2 : lengthMm / 2 + slot * pitch) + phase * pitch;
         for (const shift of [0, -0.12, 0.12, -0.24, 0.24, -0.36, 0.36, -0.5, 0.5]) {
           const rawPosition = base + shift * pitch;
           const position = route.closed ? (rawPosition % route.length + route.length) % route.length : rawPosition;
@@ -272,7 +274,7 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
     // A failed slot must not leave the surviving LEDs anchored to the old
     // layout's end. Refit a complete, centered row for the count that fits,
     // checking the same body clearance and spacing constraints as before.
-    if (!route.closed && best.length) {
+    if (!route.closed && best.length && !division.cornerBranch) {
       let centered: Proposal[] | null = null;
       for (let count = slots; count >= best.length && !centered; count--) {
         const roomGap = count > 1 ? (route.length - count * lengthMm) / (count - 1) : 0;
@@ -357,7 +359,7 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
       best.sort((a, b) => a.position - b.position);
     }
     // Long recovered branches can lose one terminal LED to keep branch tips
-    // lighter, as requested for the M/N supports. Short branches must retain
+    // lighter. Short branches must retain
     // both LEDs when only two physically fit; dropping one leaves them sparse.
     const omittedTip = division.coverageBranch && !route.closed && best.length > 2 ? 1 : 0;
     if (omittedTip) best.pop();

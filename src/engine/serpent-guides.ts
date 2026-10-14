@@ -52,7 +52,12 @@ export function composeSerpentGuides(skeleton: SkeletonResult, partitions: Parti
     coverage.set(span.edgeId, [...(coverage.get(span.edgeId) ?? []), span]);
   }
   const sourceBoundaryPoints = new Map<string, { edgeId: string; distance: number; regionId: string; point: Point }>();
-  for (const edge of usefulSkeletonEdges(skeleton)) {
+  const usefulEdges = usefulSkeletonEdges(skeleton);
+  const degree = new Map<string, number>();
+  for (const edge of usefulEdges) if (!edge.coverageBranch) for (const id of [edge.from, edge.to]) {
+    if (id) degree.set(id, (degree.get(id) ?? 0) + 1);
+  }
+  for (const edge of usefulEdges) {
     const region = skeleton.regions.find(region => region.id === edge.regionId);
     if (!region || edge.points.length < 2) continue;
     const points = edge.closed ? [...edge.points, edge.points[0]] : edge.points;
@@ -86,7 +91,8 @@ export function composeSerpentGuides(skeleton: SkeletonResult, partitions: Parti
         outerContourId: region.outerContourId, innerContourId: region.holeContourIds[0] ?? '',
         sourceEdgeId: edge.id, sourceRange: [from, to], sourceSpans: [{ edgeId: edge.id, from, to }],
         index: 0, fraction: 0.5, lane: 0, closed, points: svgPoints, d: pathData(svgPoints, closed), origin: 'skeleton',
-        coverageBranch: edge.coverageBranch });
+        coverageBranch: edge.coverageBranch, cornerBranch: edge.cornerBranch, bodyFiltered: edge.coverageBranch,
+        junctionBridge: from === 0 && to === length && (degree.get(edge.from ?? '') ?? 0) > 2 && (degree.get(edge.to ?? '') ?? 0) > 2 });
     }
   }
   // Close paired lanes at their source interval boundaries, including terminal

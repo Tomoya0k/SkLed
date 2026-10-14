@@ -3,7 +3,7 @@ import { buildRegions, pathData, pointDistance, polygonContains, scaleRegion, un
 import type { GeometryRegion, GeometryScale } from './regions';
 
 export interface SkeletonNode { id: string; regionId: string; figureId: string; kind: 'point' | 'end' | 'junction'; point: Point; radius: number }
-export interface SkeletonEdge { id: string; regionId: string; figureId: string; from: string | null; to: string | null; points: Point[]; closed: boolean; d: string; coverageBranch?: boolean }
+export interface SkeletonEdge { id: string; regionId: string; figureId: string; from: string | null; to: string | null; points: Point[]; closed: boolean; d: string; coverageBranch?: boolean; cornerBranch?: boolean }
 /** Points/radii use the declared working units. d and regions remain in SVG coordinates. */
 export interface SkeletonResult { nodes: SkeletonNode[]; edges: SkeletonEdge[]; regions: GeometryRegion[]; scale: GeometryScale; units: 'mm' | 'svg'; resolution: number; warnings: string[] }
 
