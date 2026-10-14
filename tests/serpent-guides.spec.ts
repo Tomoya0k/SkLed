@@ -1,6 +1,34 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
+test('Medical M keeps paired lanes on both sides after spur pruning at 2150 by 300 cm', async ({ page }) => {
+  await page.goto('/');
+  const source = readFileSync(new URL('./fixtures/medical-m.svg', import.meta.url), 'utf8');
+  const result = await page.evaluate(async source => {
+    const enginePath = '/src/engine/index.ts', filterPath = '/src/engine/skeleton-filter.ts';
+    const { parseSvg, generateSkeleton, generatePartitions, composeSerpentGuides } = await import(enginePath);
+    const { filterSkeletonSpurs } = await import(filterPath);
+    const model = parseSvg(source);
+    const skeleton = filterSkeletonSpurs(generateSkeleton(model, { widthMm: 21500, heightMm: 3000 }));
+    const parts = generatePartitions(skeleton, { minimumSectionWidthMm: 100 });
+    const output = composeSerpentGuides(skeleton, parts);
+    const lanes = output.paths.filter((p: any) => p.origin === 'partition');
+    const sides = [0, 0];
+    for (const lane of lanes) {
+      const centerX = lane.points.reduce((sum: number, point: any) => sum + point.x, 0) / lane.points.length;
+      sides[centerX < 1248 ? 0 : 1]++;
+    }
+    return { candidates: parts.paths.length, retained: lanes.length, sides,
+      contours: model.figures.flatMap((f: any) => f.contours.map((c: any) => c.d)),
+      guides: output.paths.map((p: any) => p.d) };
+  }, source);
+  expect(result.candidates).toBe(8);
+  expect(result.retained).toBe(8);
+  expect(result.sides).toEqual([4, 4]);
+  await page.setContent(`<style>body{margin:0;background:#08160f;color:#d9f5df;font:18px sans-serif}p{padding:0 24px}svg{height:930px;width:100%}path{fill:none;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}</style><p>Medical · M · dibujo completo a 2150 × 300 cm · cierre de partidas</p><svg viewBox="-100 -20 2700 2600">${result.contours.map((d: string) => `<path d="${d}" stroke="#59ff91" stroke-width="2"/>`).join('')}${result.guides.map((d: string) => `<path d="${d}" stroke="#ff83c6" stroke-width="2"/>`).join('')}</svg>`);
+  await page.screenshot({ path: 'test-results/medical-m-caps.png' });
+});
+
 for (const minimum of [0, 100, 140, 10000]) test(`serpent replaces only partition source intervals at ${minimum} mm`, async ({ page }) => {
   await page.goto('/');
   const source = readFileSync(new URL('./fixtures/01-letras-3d.svg', import.meta.url), 'utf8');
@@ -46,6 +74,7 @@ for (const minimum of [0, 100, 140, 10000]) test(`serpent replaces only partitio
     }
     return { errors, coveredTotal, remainingTotal,
       partitionPaths: parts.paths.map((p: any) => p.d),
+      openPartitionCount: retainedParts.filter((p: any) => !p.closed).length,
       preservedPartitions: retainedParts.every((part: any) => {
         const output = combined.paths.find((p: any) => p.id === part.id)!;
         return output.origin === 'partition' && output.closed === part.closed &&
@@ -62,13 +91,16 @@ for (const minimum of [0, 100, 140, 10000]) test(`serpent replaces only partitio
   expect(result.preservedPartitions).toBe(true);
   expect(result.removedCorners).toBeGreaterThan(0);
   expect(result.remainingTotal).toBeGreaterThan(0);
-  if (minimum === 10000 || minimum === 140) {
-    if (minimum === 10000) expect(result.partitionPaths).toHaveLength(0);
+  if (minimum === 10000) {
+    expect(result.partitionPaths).toHaveLength(0);
     expect(result.coveredTotal).toBe(0);
     expect(result.remainingCount).toBe(result.skeletonCount);
   } else {
     expect(result.coveredTotal).toBeGreaterThan(0);
-    expect(result.attachedEnds).toBeGreaterThan(0);
+    // Closed cycles have no residual endpoints to attach. The explicit paired
+    // lane regression covers the transverse joins independently of this fixture.
+    if (result.openPartitionCount) expect(result.attachedEnds).toBeGreaterThan(0);
+    else expect(result.attachedEnds).toBe(0);
     if (minimum === 0) expect(result.hasJoinedSources).toBe(true);
   }
   if (minimum === 0 || minimum === 100 || minimum === 140) {

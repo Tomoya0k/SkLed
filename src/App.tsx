@@ -141,7 +141,7 @@ export default function App() {
   const [layout, setLayout] = useState<LayoutResult | null>(null);
   const [layoutPlanning, setLayoutPlanning] = useState(false);
   const [selectedFigureId, setSelectedFigureId] = useState<string | null>(null);
-  const [minimumSectionWidth, setMinimumSectionWidth] = useState('0');
+  const [minimumSectionWidth, setMinimumSectionWidth] = useState('10');
   const [avoidModuleCollisions, setAvoidModuleCollisions] = useState(true);
   const [svgWidth, setSvgWidth] = useState('');
   const [svgHeight, setSvgHeight] = useState('');
@@ -230,9 +230,11 @@ export default function App() {
     };
     worker.onerror = () => { setLayoutPlanning(false); setError('No se pudo calcular la distribución.'); worker.terminate(); };
     worker.postMessage({ model, physicalSize: physicalWidth && physicalHeight ? { widthMm: physicalWidth, heightMm: physicalHeight } : undefined,
-      skeleton: sourceSkeleton, placement });
+      skeleton: sourceSkeleton, placement,
+      coverageMeasurements: moduleGeometry ? { lengthMm: moduleGeometry.body.lengthMm, widthMm: moduleGeometry.widthMm,
+        leftPigtailMm: moduleGeometry.leftPigtail.lengthMm, rightPigtailMm: moduleGeometry.rightPigtail.lengthMm } : undefined });
     return () => worker.terminate();
-  }, [needSkeleton, model, physicalWidth, physicalHeight, placement]);
+  }, [needSkeleton, model, physicalWidth, physicalHeight, placement, moduleGeometry]);
   const ledRoutes = divisions?.paths.map(path => ({ id: path.id, divisionId: path.id, d: path.d })) ?? [];
   const moduleLabelSize = moduleGeometry && physicalSizeReady ? Math.min(mm(moduleWidth) * 0.48, mm(moduleLength) * 0.28) * model.viewBox.height / mm(svgHeight) : 0;
   useEffect(() => {

@@ -4,11 +4,41 @@ import type { GeometryRegion } from './regions';
 import { pathData, pointDistance, regionContains, scaleRegion, unscalePoint } from './regions';
 import type { Point } from './types';
 import { usefulSkeletonEdges } from './skeleton-filter';
+import { symmetryTolerance } from './skeleton';
 
 export interface PartitionConfig { minimumSectionWidthMm?: number }
 export interface SkeletonSpan { edgeId: string; from: number; to: number }
-export interface PartitionPath extends DivisionPath { regionId: string; sourceEdgeId: string; sourceRange: [number, number]; sourceSpans?: SkeletonSpan[]; lane: -1 | 0 | 1; closed: boolean; points: Point[] }
+export interface PartitionPath extends DivisionPath { regionId: string; sourceEdgeId: string; sourceRange: [number, number]; sourceSpans?: SkeletonSpan[]; junctionBounded?: boolean; lane: -1 | 0 | 1; closed: boolean; points: Point[] }
 export interface PartitionResult extends DivisionResult { paths: PartitionPath[]; regions: GeometryRegion[] }
+
+/** Allow a near-fitting straight partida to reach one body length, without
+ * relaxing the subsequent physical body/contour checks or copying whole letters. */
+export function extendShortPartitionPaths(result: PartitionResult, skeleton: SkeletonResult, bodyLengthMm: number): PartitionResult {
+  const regions = new Map(result.regions.map(region => [region.id, scaleRegion(region, skeleton.scale)]));
+  const paths = result.paths.map(path => {
+    const region = regions.get(path.regionId);
+    if (!region || path.closed || path.points.length < 2) return path;
+    const points = path.points.map(p => ({ x: p.x * skeleton.scale.x, y: p.y * skeleton.scale.y }));
+    const first = points[0], last = points.at(-1)!;
+    const length = points.slice(1).reduce((sum, p, i) => sum + pointDistance(p, points[i]), 0);
+    const chord = pointDistance(first, last), missing = bodyLengthMm - length;
+    const tolerance = Math.min(symmetryTolerance(region, true), bodyLengthMm * 0.1);
+    if (missing <= 0 || missing > tolerance || chord <= 0 || length > chord * 1.05) return path;
+    const extension = (missing + Math.min(0.2, tolerance * 0.1)) / 2;
+    const direction = { x: (last.x - first.x) / chord, y: (last.y - first.y) / chord };
+    const start = { x: first.x - direction.x * extension, y: first.y - direction.y * extension };
+    const end = { x: last.x + direction.x * extension, y: last.y + direction.y * extension };
+    for (const [a, b] of [[start, first], [last, end]]) {
+      const steps = Math.max(2, Math.ceil(pointDistance(a, b) / Math.max(0.1, skeleton.resolution / 2)));
+      for (let i = 0; i <= steps; i++) if (!regionContains({ x: a.x + (b.x - a.x) * i / steps, y: a.y + (b.y - a.y) * i / steps }, region)) return path;
+    }
+    const extended = [start, ...points, end].map(p => unscalePoint(p, skeleton.scale));
+    return { ...path, points: extended, d: pathData(extended) };
+  });
+  const safe = filterCrossingPartitionPaths(paths);
+  // If extending a guide introduces a crossing, retain the original layout.
+  return safe.removed ? result : { ...result, paths };
+}
 interface Sample { left: Point; right: Point; eligible: boolean }
 interface BoundarySegment { a: Point; b: Point; minX: number; minY: number; maxX: number; maxY: number; centerX: number; centerY: number }
 interface BoundaryNode { minX: number; minY: number; maxX: number; maxY: number; segments?: BoundarySegment[]; left?: BoundaryNode; right?: BoundaryNode }
@@ -93,12 +123,37 @@ function sourceSpans(edge: GuideEdge, from: number, to: number): SkeletonSpan[] 
  * A pruned spoke must not turn a junction into a false degree-two continuation. */
 function guideEdges(skeleton: SkeletonResult): GuideEdge[] {
   const nodes = new Map(skeleton.nodes.map(node => [node.id, node]));
-  const edges = usefulSkeletonEdges(skeleton);
+  // Coverage branches already represent a body-fitting LED row, not a new
+  // pair of offset lanes around a short terminal spoke.
+  const edges = usefulSkeletonEdges(skeleton).filter(edge => !edge.coverageBranch);
   const originalIncident = new Map<string, SkeletonEdge[]>();
   for (const edge of skeleton.edges) for (const id of [edge.from, edge.to]) if (id) originalIncident.set(id, [...(originalIncident.get(id) ?? []), edge]);
-  const originalDegree = (id: string | null) => id ? originalIncident.get(id)?.length ?? 0 : 0;
   const incident = new Map<string, SkeletonEdge[]>();
   for (const edge of edges) for (const id of [edge.from, edge.to]) if (id) incident.set(id, [...(incident.get(id) ?? []), edge]);
+  // A complete surviving cycle (letters with holes) must remain a closed guide.
+  const cycleNodes = new Set<string>(), visited = new Set<string>();
+  for (const seed of incident.keys()) {
+    if (visited.has(seed)) continue;
+    const component: string[] = [], pending = [seed];
+    let cycle = true;
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id); component.push(id);
+      const adjacent = incident.get(id) ?? [];
+      if (adjacent.length !== 2) cycle = false;
+      for (const edge of adjacent) {
+        const next = edge.from === id ? edge.to : edge.from;
+        if (next) { if (!visited.has(next)) pending.push(next); }
+        else cycle = false;
+      }
+    }
+    if (cycle) for (const id of component) cycleNodes.add(id);
+  }
+  // Spur filtering can remove incident edges before this function runs. The
+  // node still records whether this was a junction in the original graph.
+  const originalDegree = (id: string | null) => id ? cycleNodes.has(id) ? 2
+    : Math.max(originalIncident.get(id)?.length ?? 0, nodes.get(id)?.kind === 'junction' ? 3 : 0) : 0;
   const used = new Set<string>(), guides: GuideEdge[] = [];
   const walk = (seed: SkeletonEdge, start: string | null) => {
     if (used.has(seed.id)) return;
@@ -258,7 +313,9 @@ export function generatePartitions(skeleton: SkeletonResult, config: PartitionCo
     const samples: Sample[] = Array.from({ length: edge.closed ? count : count + 1 }, (_, i) => {
       const at = i * step;
       // Average only raster-scale noise; geometry and sharp turns remain local.
-      const center = [-2, -1, 0, 1, 2].reduce((sum, offset) => {
+      // Clamped averaging moves open endpoints inward and can shrink a valid
+      // short row below the physical module length. Keep its source limits.
+      const center = !edge.closed && (i === 0 || i === count) ? line.at(at) : [-2, -1, 0, 1, 2].reduce((sum, offset) => {
         const point = line.at(at + offset * skeleton.resolution), weight = 3 - Math.abs(offset);
         return { x: sum.x + point.x * weight / 9, y: sum.y + point.y * weight / 9 };
       }, { x: 0, y: 0 });
@@ -305,6 +362,8 @@ export function generatePartitions(skeleton: SkeletonResult, config: PartitionCo
               regionId: edge.regionId, outerContourId: sourceRegion.outerContourId, innerContourId: sourceRegion.holeContourIds[0] ?? '',
               sourceEdgeId: edge.id, sourceRange: [indices[0] * step, indices.at(-1)! * step], index: lane === -1 ? 1 : 2,
               sourceSpans: sourceSpans(edge, indices[0] * step, indices.at(-1)! * step),
+              junctionBounded: !closed && ((indices[0] === 0 && edge.sourceOffset > 1e-6) ||
+                (indices.at(-1) === count && line.length + edge.sourceOffset < edge.sourceSections.reduce((sum, section) => sum + section.length, 0) - 1e-6)),
               fraction: lane === -1 ? 0.25 : 0.75, lane, closed, points, d: pathData(points, closed) });
           }
           runStart = position;

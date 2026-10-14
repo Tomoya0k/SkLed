@@ -13,6 +13,8 @@ export interface DivisionPath {
   fraction: number;
   /** Body-fit filtered guides require the whole module span within the guide. */
   bodyFiltered?: boolean;
+  /** Recovered terminal row, oriented from its junction toward its tip. */
+  coverageBranch?: boolean;
   /** Numerically traced line between both source boundaries, in SVG units. */
   d: string;
 }

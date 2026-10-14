@@ -3,7 +3,7 @@ import { buildRegions, pathData, pointDistance, polygonContains, scaleRegion, un
 import type { GeometryRegion, GeometryScale } from './regions';
 
 export interface SkeletonNode { id: string; regionId: string; figureId: string; kind: 'point' | 'end' | 'junction'; point: Point; radius: number }
-export interface SkeletonEdge { id: string; regionId: string; figureId: string; from: string | null; to: string | null; points: Point[]; closed: boolean; d: string }
+export interface SkeletonEdge { id: string; regionId: string; figureId: string; from: string | null; to: string | null; points: Point[]; closed: boolean; d: string; coverageBranch?: boolean }
 /** Points/radii use the declared working units. d and regions remain in SVG coordinates. */
 export interface SkeletonResult { nodes: SkeletonNode[]; edges: SkeletonEdge[]; regions: GeometryRegion[]; scale: GeometryScale; units: 'mm' | 'svg'; resolution: number; warnings: string[] }
 
@@ -135,11 +135,121 @@ function medialMask(mask: Uint8Array, columns: number, distance: Float64Array): 
   return result;
 }
 
-function raster(region: GeometryRegion, step: number) {
+/** A cycle in the medial graph must enclose a hole in the filled region.
+ * Raster diamonds can involve several nodes, so checking self-loops alone
+ * leaves false junctions which defeat terminal-branch pruning. */
+function cleanRasterGraph(input: SkeletonEdge[], nodes: SkeletonNode[], region: GeometryRegion, scale: GeometryScale) {
+  const retained: SkeletonEdge[] = [];
+  const adjacency = new Map<string, Array<{ next: string; edge: SkeletonEdge }>>();
+  for (const edge of [...input].sort((a, b) => edgeLength(b) - edgeLength(a))) {
+    if (!edge.from || !edge.to || edge.closed) { retained.push(edge); continue; }
+    const queue = [edge.from], previous = new Map<string, { node: string; edge: SkeletonEdge }>();
+    const visited = new Set(queue);
+    for (let head = 0; head < queue.length && !visited.has(edge.to); head++) {
+      const node = queue[head];
+      for (const link of adjacency.get(node) ?? []) if (!visited.has(link.next)) {
+        visited.add(link.next); previous.set(link.next, { node, edge: link.edge }); queue.push(link.next);
+      }
+    }
+    if (visited.has(edge.to)) {
+      const loop = [...edge.points];
+      let current = edge.to;
+      while (current !== edge.from) {
+        const link = previous.get(current)!;
+        const points = link.edge.from === current ? link.edge.points : [...link.edge.points].reverse();
+        loop.push(...points.slice(1)); current = link.node;
+      }
+      if (!region.holes.some(hole => polygonContains(hole[0], loop))) continue;
+    }
+    retained.push(edge);
+    adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), { next: edge.to, edge }]);
+    adjacency.set(edge.to, [...(adjacency.get(edge.to) ?? []), { next: edge.from, edge }]);
+  }
+  // Rejoin degree-two chains before pruning: their internal raster nodes are
+  // not real junctions and must not protect a short terminal branch.
+  let edges = retained;
+  for (const node of nodes) {
+    const incident = edges.filter(edge => !edge.closed && (edge.from === node.id || edge.to === node.id));
+    if (incident.length !== 2) continue;
+    const [a, b] = incident;
+    const first = a.to === node.id ? a.points : [...a.points].reverse();
+    const second = b.from === node.id ? b.points : [...b.points].reverse();
+    const from = a.to === node.id ? a.from : a.to, to = b.from === node.id ? b.to : b.from;
+    const points = [...first, ...second.slice(1)], closed = from === to;
+    if (closed) points.pop();
+    const joined = { ...a, from, to, points, closed, d: pathData(points.map(p => unscalePoint(p, scale)), closed) };
+    edges = edges.filter(edge => edge !== a && edge !== b); edges.push(joined);
+  }
+  const degree = new Map<string, number>();
+  for (const edge of edges) for (const id of [edge.from, edge.to]) if (id) degree.set(id, (degree.get(id) ?? 0) + 1);
+  return { edges, nodes: nodes.filter(node => degree.has(node.id) || node.kind === 'point').map(node =>
+    ({ ...node, kind: (degree.get(node.id) === 1 ? 'end' : degree.get(node.id)! > 2 ? 'junction' : node.kind) as SkeletonNode['kind'] })) };
+}
+
+/** Verify reflection against the boundary itself, including a one-to-one
+ * matching of holes. Similar-looking letters are not necessarily symmetric. */
+export function regionSymmetryAxes(region: GeometryRegion, tolerance: number): Array<'x' | 'y'> {
+  const loops = [region.outer, ...region.holes];
+  const distanceToLoop = (p: Point, loop: Point[]) => Math.min(...loop.map((a, i) => {
+    const b = loop[(i + 1) % loop.length], dx = b.x - a.x, dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy);
+  }));
+  return (['x', 'y'] as const).filter(axis => {
+    const center = (Math.min(...region.outer.map(p => p[axis])) + Math.max(...region.outer.map(p => p[axis]))) / 2;
+    const matches = (a: Point[], b: Point[]) => a.every((p, i) => [0, 0.25, 0.5, 0.75].every(t => {
+      const next = a[(i + 1) % a.length];
+      const sample = { x: p.x + t * (next.x - p.x), y: p.y + t * (next.y - p.y) };
+      sample[axis] = 2 * center - sample[axis];
+      return distanceToLoop(sample, b) <= tolerance;
+    }));
+    if (!matches(region.outer, region.outer)) return false;
+    const used = new Set<number>();
+    for (let i = 1; i < loops.length; i++) {
+      const other = loops.findIndex((loop, j) => j > 0 && !used.has(j) && matches(loops[i], loop) && matches(loop, loops[i]));
+      if (other < 0) return false;
+      used.add(other);
+    }
+    return true;
+  });
+}
+
+// Medical's M differs by about 23 mm and its A by 4 mm at the supplied
+// dimensions. Limit the allowance both relatively and in physical units so
+// small letters cannot inherit the same absolute allowance as a large sign.
+export function symmetryTolerance(region: GeometryRegion, physical: boolean): number {
+  const shorterSide = Math.min(...(['x', 'y'] as const).map(axis =>
+    Math.max(...region.outer.map(p => p[axis])) - Math.min(...region.outer.map(p => p[axis]))));
+  return Math.min(shorterSide * 0.015, physical ? 25 : Infinity);
+}
+
+function rasterTopology(mask: Uint8Array, columns: number): string {
+  const visited = new Uint8Array(mask.length), queue = new Int32Array(mask.length);
+  let filled = 0, empty = 0;
+  for (let start = 0; start < mask.length; start++) {
+    if (visited[start]) continue;
+    const value = mask[start];
+    if (value) filled++; else empty++;
+    let head = 0, tail = 1; queue[0] = start; visited[start] = 1;
+    while (head < tail) {
+      const at = queue[head++], x = at % columns;
+      for (const next of [x > 0 ? at - 1 : -1, x < columns - 1 ? at + 1 : -1, at - columns, at + columns]) {
+        if (next < 0 || next >= mask.length || visited[next] || mask[next] !== value) continue;
+        visited[next] = 1; queue[tail++] = next;
+      }
+    }
+  }
+  return `${filled}:${empty}`;
+}
+
+function raster(region: GeometryRegion, step: number, symmetry: Array<'x' | 'y'>) {
   const minX = Math.min(...region.outer.map(p => p.x)), minY = Math.min(...region.outer.map(p => p.y));
   const width = Math.max(...region.outer.map(p => p.x)) - minX, height = Math.max(...region.outer.map(p => p.y)) - minY;
-  const columns = Math.ceil(width / step) + 6, rows = Math.ceil(height / step) + 6;
-  const x = minX - 2.5 * step, y = minY - 2.5 * step, mask = new Uint8Array(columns * rows);
+  const columns = symmetry.includes('x') ? 2 * Math.ceil(width / step / 2) + 7 : Math.ceil(width / step) + 6;
+  const rows = symmetry.includes('y') ? 2 * Math.ceil(height / step / 2) + 7 : Math.ceil(height / step) + 6;
+  const x = symmetry.includes('x') ? minX + width / 2 - (columns - 1) * step / 2 : minX - 2.5 * step;
+  const y = symmetry.includes('y') ? minY + height / 2 - (rows - 1) * step / 2 : minY - 2.5 * step;
+  const mask = new Uint8Array(columns * rows);
   for (let row = 1; row < rows - 1; row++) {
     const py = y + row * step, cuts: number[] = [];
     for (const loop of [region.outer, ...region.holes]) for (let i = 0; i < loop.length; i++) {
@@ -155,9 +265,44 @@ function raster(region: GeometryRegion, step: number) {
   return { mask, columns, rows, x, y };
 }
 
-function vectorize(region: GeometryRegion, scale: GeometryScale, step: number): { nodes: SkeletonNode[]; edges: SkeletonEdge[] } {
-  const grid = raster(region, step), distance = distances(grid.mask, grid.columns, grid.rows);
-  const pixels = medialMask(grid.mask, grid.columns, distance), ids = Array.from(pixels.keys()).filter(i => pixels[i]);
+function vectorize(region: GeometryRegion, scale: GeometryScale, step: number, tolerance: number): { nodes: SkeletonNode[]; edges: SkeletonEdge[] } {
+  let symmetry = regionSymmetryAxes(region, tolerance);
+  let grid = raster(region, step, symmetry);
+  if (symmetry.length) {
+    const original = grid.mask.slice();
+    // Use the common interior of both halves. This leaves the imported contour
+    // unchanged and prevents a reflected skeleton from crossing a narrower side.
+    for (let row = 0; row < grid.rows; row++) for (let col = 0; col < grid.columns; col++) {
+      const i = row * grid.columns + col;
+      if (symmetry.includes('x')) {
+        const j = row * grid.columns + grid.columns - 1 - col;
+        grid.mask[i] = grid.mask[j] = grid.mask[i] & grid.mask[j];
+      }
+      if (symmetry.includes('y')) {
+        const j = (grid.rows - 1 - row) * grid.columns + col;
+        grid.mask[i] = grid.mask[j] = grid.mask[i] & grid.mask[j];
+      }
+    }
+    // Reject symmetry if it would split a stroke or open/close a hole.
+    if (rasterTopology(original, grid.columns) !== rasterTopology(grid.mask, grid.columns)) {
+      symmetry = []; grid = raster(region, step, symmetry);
+    }
+  }
+  const distance = distances(grid.mask, grid.columns, grid.rows);
+  const pixels = medialMask(grid.mask, grid.columns, distance);
+  // Work from the left/top half only after geometric verification. Centered
+  // odd-sized grids provide a shared axis; joining it preserves connectivity.
+  if (symmetry.includes('x')) for (let row = 1; row < grid.rows - 1; row++) {
+    const middle = (grid.columns - 1) / 2, base = row * grid.columns;
+    for (let col = 0; col < middle; col++) pixels[base + grid.columns - 1 - col] = pixels[base + col] & grid.mask[base + grid.columns - 1 - col];
+    if (pixels[base + middle - 1]) pixels[base + middle] = grid.mask[base + middle];
+  }
+  if (symmetry.includes('y')) for (let col = 1; col < grid.columns - 1; col++) {
+    const middle = (grid.rows - 1) / 2;
+    for (let row = 0; row < middle; row++) pixels[(grid.rows - 1 - row) * grid.columns + col] = pixels[row * grid.columns + col] & grid.mask[(grid.rows - 1 - row) * grid.columns + col];
+    if (pixels[(middle - 1) * grid.columns + col]) pixels[middle * grid.columns + col] = grid.mask[middle * grid.columns + col];
+  }
+  const ids = Array.from(pixels.keys()).filter(i => pixels[i]);
   const point = (i: number): Point => ({ x: grid.x + i % grid.columns * step, y: grid.y + Math.floor(i / grid.columns) * step });
   const radius = (i: number) => Math.sqrt(distance[i]) * step;
   if (!ids.length) return { nodes: [], edges: [] };
@@ -227,8 +372,7 @@ function vectorize(region: GeometryRegion, scale: GeometryScale, step: number): 
   }
   for (const i of ids) for (const j of adjacency.get(i)!) if (!used.has(key(i, j))) walk(i, j, null);
   const cleanEdges = deduplicateRasterEdges(edges, step);
-  const referenced = new Set(cleanEdges.flatMap(e => [e.from, e.to]));
-  return { nodes: nodes.filter(n => n.kind === 'point' || referenced.has(n.id)), edges: cleanEdges };
+  return cleanRasterGraph(cleanEdges, nodes, region, scale);
 }
 
 export function generateSkeleton(model: SvgModel, physicalSize?: { widthMm: number; heightMm: number }, prepared?: ReturnType<typeof buildRegions>): SkeletonResult {
@@ -248,7 +392,9 @@ export function generateSkeleton(model: SvgModel, physicalSize?: { widthMm: numb
       const length = pointDistance(a, b), angle = Math.atan2(b.y - a.y, b.x - a.x);
       cosine += length * Math.cos(4 * angle); sine += length * Math.sin(4 * angle); perimeter += length;
     }
-    const angle = Math.hypot(cosine, sine) > perimeter * 0.3 ? Math.atan2(sine, cosine) / 4 : 0;
+    const tolerance = symmetryTolerance(physicalRegion, !!physicalSize);
+    const axisAlignedSymmetry = regionSymmetryAxes(physicalRegion, tolerance).length > 0;
+    const angle = !axisAlignedSymmetry && Math.hypot(cosine, sine) > perimeter * 0.3 ? Math.atan2(sine, cosine) / 4 : 0;
     const c = Math.cos(angle), s = Math.sin(angle);
     const align = (p: Point): Point => ({ x: p.x * c + p.y * s, y: -p.x * s + p.y * c });
     const restore = (p: Point): Point => ({ x: p.x * c - p.y * s, y: p.x * s + p.y * c });
@@ -257,7 +403,7 @@ export function generateSkeleton(model: SvgModel, physicalSize?: { widthMm: numb
     if (!(span > 0)) continue;
     const step = Math.max(span / 768, Math.min(physicalSize ? 0.25 : span / 512, span / 256));
     resolution = Math.max(resolution, step);
-    const result = vectorize(region, scale, step);
+    const result = vectorize(region, scale, step, tolerance);
     nodes.push(...result.nodes.map(node => ({ ...node, point: restore(node.point) })));
     edges.push(...result.edges.map(edge => { const points = edge.points.map(restore); return { ...edge, points, d: pathData(points.map(p => unscalePoint(p, scale)), edge.closed) }; }));
     if (!result.edges.length && result.nodes.length) warnings.push(`${model.figures.find(f => f.id === region.figureId)?.name}: Skeleton puntual, sin recorrido direccional.`);

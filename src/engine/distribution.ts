@@ -269,6 +269,52 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
       if (best.length === slots) break;
     }
     best.sort((a, b) => a.position - b.position);
+    // A failed slot must not leave the surviving LEDs anchored to the old
+    // layout's end. Refit a complete, centered row for the count that fits,
+    // checking the same body clearance and spacing constraints as before.
+    if (!route.closed && best.length) {
+      let centered: Proposal[] | null = null;
+      for (let count = slots; count >= best.length && !centered; count--) {
+        const roomGap = count > 1 ? (route.length - count * lengthMm) / (count - 1) : 0;
+        const largestGap = Math.min(maximumGap, roomGap);
+        const gaps = count === 1 ? [0] : [desiredGap, (desiredGap + largestGap) / 2, largestGap];
+        for (const gap of gaps) {
+          if (count > 1 && (gap < minimumGap - 1e-6 || gap > maximumGap + 1e-6)) continue;
+          const pitch = lengthMm + gap;
+          const start = (route.length - (count - 1) * pitch) / 2;
+          const proposals: Proposal[] = [];
+          for (let slot = 0; slot < count; slot++) {
+            const position = start + slot * pitch;
+            if (!fitsGuide(position)) break;
+            const rectangle = makeRectangle(route, position, lengthMm, bodyWidthMm);
+            if (!rectangle || !valid(rectangle, proposals)) break;
+            proposals.push({ position, rectangle });
+          }
+          if (proposals.length === count) { centered = proposals; break; }
+        }
+      }
+      if (centered) best = centered;
+    }
+    // Fit closed rows as a whole ring. Independent slot shifts otherwise push
+    // accumulated spacing error into the seam, leaving a long empty arc.
+    if (route.closed && best.length) {
+      let ring: Proposal[] | null = null;
+      for (let count = slots; count >= best.length && !ring; count--) {
+        const ringPitch = route.length / count;
+        if (ringPitch - lengthMm > maximumGap + 1e-6) break;
+        for (let phase = 0; phase < 24 && !ring; phase++) {
+          const proposals: Proposal[] = [];
+          for (let slot = 0; slot < count; slot++) {
+            const position = (slot + phase / 24) * ringPitch;
+            const rectangle = makeRectangle(route, position, lengthMm, bodyWidthMm);
+            if (!rectangle || !valid(rectangle, proposals)) break;
+            proposals.push({ position, rectangle });
+          }
+          if (proposals.length === count) ring = proposals;
+        }
+      }
+      if (ring) best = ring;
+    }
     // Repair a skipped slot where another physical body can bridge the gap.
     for (let i = 1; i < best.length; i++) {
       const gap = Math.max(rectangleGap(best[i - 1].rectangle, best[i].rectangle), best[i].position - best[i - 1].position - lengthMm);
@@ -293,7 +339,29 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
       }
     }
     best.sort((a, b) => a.position - b.position);
-    stat.unplaced += Math.max(0, slots - best.length);
+    // A closed row has one more interval: the last LED back to the first.
+    // Repairing only adjacent array entries left an unfilled arc at that seam.
+    if (route.closed && best.length > 1) {
+      let before = best.at(-1)!.position;
+      const after = best[0].position + route.length;
+      const minimumPitch = lengthMm + minimumGap;
+      const increment = Math.max(1, bodyWidthMm / 3);
+      for (let position = before + minimumPitch; position <= after - minimumPitch + 1e-6; position += increment) {
+        const wrapped = position % route.length;
+        const candidate = makeRectangle(route, wrapped, lengthMm, bodyWidthMm);
+        if (!candidate || !valid(candidate, best)) continue;
+        best.push({ position: wrapped, rectangle: candidate });
+        before = position;
+        position = before + minimumPitch - increment;
+      }
+      best.sort((a, b) => a.position - b.position);
+    }
+    // Long recovered branches can lose one terminal LED to keep branch tips
+    // lighter, as requested for the M/N supports. Short branches must retain
+    // both LEDs when only two physically fit; dropping one leaves them sparse.
+    const omittedTip = division.coverageBranch && !route.closed && best.length > 2 ? 1 : 0;
+    if (omittedTip) best.pop();
+    stat.unplaced += Math.max(0, slots - best.length - omittedTip);
     const rowModules: LedPlacement[] = [];
     for (const [slot, proposal] of best.entries()) {
       const accepted = proposal.rectangle;
@@ -327,6 +395,9 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
       runs.at(-1)!.push(i);
     }
     const seamGap = route.closed && best.length > 1 ? Math.max(rectangleGap(best.at(-1)!.rectangle, best[0].rectangle), route.length + best[0].position - best.at(-1)!.position - lengthMm) : Infinity;
+    if (route.closed && best.length > 1 && seamGap > maximumGap + 1e-5) {
+      rowBreaks.push({ divisionId: division.id, fromId: rowModules.at(-1)!.id, toId: rowModules[0].id, gapMm: seamGap });
+    }
     for (const [runIndex, indices] of runs.entries()) {
       const id = `${division.id}-run-${runIndex}`;
       const first = best[indices[0]].position, last = best[indices.at(-1)!].position;

@@ -10,7 +10,7 @@ const edgeLength = (edge: SkeletonEdge) => edge.points.slice(1).reduce((sum, poi
 export function usefulSkeletonEdges(skeleton: SkeletonResult): SkeletonEdge[] {
   const nodes = new Map(skeleton.nodes.map(node => [node.id, node]));
   const retained = skeleton.edges.filter(edge => {
-    if (edge.closed) return true;
+    if (edge.closed || edge.coverageBranch) return true;
     const a = nodes.get(edge.from ?? ''), b = nodes.get(edge.to ?? '');
     if (!a || !b || (a.kind !== 'end' && b.kind !== 'end')) return true;
     const tip = a.kind === 'end' ? a : b, joint = tip === a ? b : a;
@@ -33,7 +33,7 @@ export function filterSkeletonSpurs(skeleton: SkeletonResult): SkeletonResult {
     const degree = new Map<string, number>();
     for (const edge of edges) if (!edge.closed) for (const id of [edge.from, edge.to]) if (id) degree.set(id, (degree.get(id) ?? 0) + 1);
     const shortTerminalEdges = new Set(edges.filter(edge => {
-      if (edge.closed) return false;
+      if (edge.closed || edge.coverageBranch) return false;
       const from = edge.from ? nodes.get(edge.from) : undefined;
       const to = edge.to ? nodes.get(edge.to) : undefined;
       // A junction keeps its identity after neighboring spurs are removed. Otherwise
