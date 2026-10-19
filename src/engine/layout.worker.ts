@@ -8,9 +8,9 @@ import type { ModuleMeasurements } from './module';
 import type { SvgModel } from './types';
 import type { buildRegions } from './regions';
 import { composeSerpentGuides, singleLedPartitionIds } from './serpent-guides';
-import type { SerpentGuides } from './serpent-guides';
+import type { SerpentGuide, SerpentGuides } from './serpent-guides';
 import { filterSkeletonSpurs } from './skeleton-filter';
-import { restoreCoverageBranches } from './skeleton-coverage';
+import { recoverMissingCoverageGuides, restoreCoverageBranches } from './skeleton-coverage';
 
 export interface LayoutResult { skeleton: SkeletonResult; sourceSkeleton: SkeletonResult; divisions: PartitionResult | null; serpentGuides: SerpentGuides | null; distribution: LedDistributionResult | null }
 export interface LayoutPlacement { config: PartitionConfig; measurements: ModuleMeasurements | null; options: PlacementOptions }
@@ -40,17 +40,34 @@ self.onmessage = (event: MessageEvent<LayoutInput>) => {
     let serpentGuides = divisions ? composeSerpentGuides(skeleton, divisions) : null;
     let distribution = serpentGuides && placement?.measurements && physicalSize ? distributeLeds(model, serpentGuides, placement.measurements, physicalSize.widthMm, physicalSize.heightMm, placement.options) : null;
     if (divisions && serpentGuides && distribution && placement?.measurements && physicalSize) {
+      let supplementalGuides: SerpentGuide[] = [];
+      let coverageRecovered = false;
       // Every pass removes paths, so this converges without toggling a partida
       // back on. Rebuild from source spans to restore the actual centerline,
       // then rerun all body, spacing and collision checks on the new layout.
       while (true) {
         const singleIds = singleLedPartitionIds(serpentGuides, distribution);
-        if (!singleIds.size) break;
-        const paths: PartitionResult['paths'] = divisions.paths.filter(path => !singleIds.has(path.id));
-        if (paths.length === divisions.paths.length) break;
-        divisions = { ...divisions, paths, pairs: paths.filter(path => path.lane === -1).length };
-        serpentGuides = composeSerpentGuides(skeleton, divisions);
-        distribution = distributeLeds(model, serpentGuides, placement.measurements, physicalSize.widthMm, physicalSize.heightMm, placement.options);
+        if (singleIds.size) {
+          const paths: PartitionResult['paths'] = divisions.paths.filter(path => !singleIds.has(path.id));
+          if (paths.length !== divisions.paths.length) {
+            divisions = { ...divisions, paths, pairs: paths.filter(path => path.lane === -1).length };
+            serpentGuides = composeSerpentGuides(skeleton, divisions);
+            if (supplementalGuides.length) serpentGuides = { ...serpentGuides,
+              paths: [...supplementalGuides, ...serpentGuides.paths] };
+            distribution = distributeLeds(model, serpentGuides, placement.measurements, physicalSize.widthMm, physicalSize.heightMm, placement.options);
+            continue;
+          }
+        }
+        if (!coverageRecovered) {
+          coverageRecovered = true;
+          supplementalGuides = recoverMissingCoverageGuides(skeleton, serpentGuides, distribution, placement.measurements);
+          if (supplementalGuides.length) {
+            serpentGuides = { ...serpentGuides, paths: [...supplementalGuides, ...serpentGuides.paths] };
+            distribution = distributeLeds(model, serpentGuides, placement.measurements, physicalSize.widthMm, physicalSize.heightMm, placement.options);
+            continue;
+          }
+        }
+        break;
       }
     }
     self.postMessage({ result: { skeleton, sourceSkeleton, divisions, serpentGuides, distribution } satisfies LayoutResult });
