@@ -5,7 +5,7 @@ import { usefulSkeletonEdges } from './skeleton-filter';
 import type { Point } from './types';
 import type { LedDistributionResult } from './distribution';
 
-export interface SerpentGuide extends PartitionPath { origin: 'partition' | 'skeleton' }
+export interface SerpentGuide extends PartitionPath { origin: 'partition' | 'skeleton' | 'border' }
 export interface SerpentGuides extends PartitionResult { paths: SerpentGuide[] }
 
 /** Both lanes belong to one partida; count their final accepted LEDs together.

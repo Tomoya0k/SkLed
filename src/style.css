@@ -113,3 +113,10 @@ h1, h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .layer-switches .led-count-button strong { color: #ccffff; font-size: 16px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
 .layer-switches .led-count-button:disabled { opacity: .55; cursor: default; }
 .layer-switches .led-count-button:focus-visible { outline: 2px solid #48e4e1; outline-offset: 3px; }
+
+.layer-switches .border-mode-button { display: flex; align-items: center; gap: 10px; min-height: 43px; padding: 0 16px; border: 1px solid #697c45; border-radius: 5px; background: #202b18; color: #c6d9a7; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+.layer-switches .border-mode-button.active { background: #34471d; color: #eeffd1; border-color: #b3dd70; box-shadow: inset 0 0 0 1px #6c8c3b; }
+.layer-switches .border-mode-button:hover { border-color: #b3dd70; }
+.border-mode-hint { margin: 0; color: #c6d9a7; font-size: 11px; line-height: 1.5; }
+.module-fields input:disabled { opacity: .45; cursor: default; }
+@media (max-width: 760px) { .layer-switches .border-mode-button { min-height: 38px; padding: 0 10px; font-size: 10px; } }

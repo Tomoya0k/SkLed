@@ -136,6 +136,7 @@ export default function App() {
   const [showLedDistribution, setShowLedDistribution] = useState(false);
   const [showSerpent, setShowSerpent] = useState(false);
   const [showPigtails, setShowPigtails] = useState(false);
+  const [preferBorder, setPreferBorder] = useState(false);
   const [serpents, setSerpents] = useState<SerpentResult[]>([]);
   const [serpentPlanning, setSerpentPlanning] = useState(false);
   const [layout, setLayout] = useState<LayoutResult | null>(null);
@@ -181,12 +182,12 @@ export default function App() {
     } catch { return null; }
   }, [moduleLength, moduleWidth, leftPigtail, rightPigtail]);
   const physicalSizeReady = svgWidth !== '' && svgHeight !== '' && mm(svgWidth) > 0 && mm(svgHeight) > 0 && Number.isFinite(mm(svgWidth)) && Number.isFinite(mm(svgHeight));
-  const canCountLeds = !!filename && physicalSizeReady && partitionInputValid && !!moduleGeometry;
+  const canCountLeds = !!filename && physicalSizeReady && (preferBorder || partitionInputValid) && !!moduleGeometry;
   const needDistribution = showLedDistribution || showPigtails || canCountLeds;
   const needPlacement = showLedRoutes || showSerpent || needDistribution;
   const needSkeleton = !!filename && (showSkeleton || needPlacement);
   const loadingLabel = reading ? 'Procesando archivo…'
-    : layoutPlanning ? `Calculando recorridos candidatos${needDistribution ? ' y distribución LED' : ''}…`
+    : layoutPlanning ? `Calculando ${preferBorder ? 'recorrido del borde' : 'recorridos candidatos'}${needDistribution ? ' y distribución LED' : ''}…`
       : serpentPlanning ? 'Calculando conexiones de pigtails…' : null;
   const skeleton = needSkeleton ? layout?.skeleton : null;
   const visibleSkeletonEdges = useMemo(() => skeleton ? usefulSkeletonEdges(skeleton) : [], [skeleton]);
@@ -210,11 +211,12 @@ export default function App() {
   const dimensionWidth = physicalSizeReady ? dimensionBounds.width * Number(svgWidth) / model.viewBox.width : dimensionBounds.width;
   const dimensionHeight = physicalSizeReady ? dimensionBounds.height * Number(svgHeight) / model.viewBox.height : dimensionBounds.height;
   const dimensionUnit = physicalSizeReady ? 'cm' : 'u SVG';
-  const placement = useMemo((): LayoutPlacement | null => needPlacement && partitionInputValid && physicalSizeReady ? {
+  const placement = useMemo((): LayoutPlacement | null => needPlacement && (preferBorder || partitionInputValid) && physicalSizeReady ? {
+    mode: preferBorder ? 'border' : 'full',
     config: { minimumSectionWidthMm: mm(minimumSectionWidth) },
     measurements: moduleGeometry ? { lengthMm: mm(moduleLength), widthMm: mm(moduleWidth), leftPigtailMm: mm(leftPigtail), rightPigtailMm: mm(rightPigtail) } : null,
     options: { minimumGapMm: minimumPigtailGapMm ?? 0, maximumGapMm: pigtailReachMm ?? 0 },
-  } : null, [needPlacement, needDistribution, partitionInputValid, physicalSizeReady, moduleGeometry, moduleLength, moduleWidth, leftPigtail, rightPigtail, minimumSectionWidth, minimumPigtailGapMm, pigtailReachMm]);
+  } : null, [needPlacement, needDistribution, preferBorder, partitionInputValid, physicalSizeReady, moduleGeometry, moduleLength, moduleWidth, leftPigtail, rightPigtail, minimumSectionWidth, minimumPigtailGapMm, pigtailReachMm]);
   const physicalWidth = physicalSizeReady ? mm(svgWidth) : null, physicalHeight = physicalSizeReady ? mm(svgHeight) : null;
   useEffect(() => {
     if (!needSkeleton) { setLayout(null); setLayoutPlanning(false); return; }
@@ -394,8 +396,9 @@ export default function App() {
         <section className="panel-section partitions-section">
           <div className="section-heading"><h2>Partidas</h2></div>
           <div className="module-fields">
-            <label>Distancia mínima entre skeleton y borde <span><input aria-label="Distancia mínima entre skeleton y borde para formar una partida" type="number" min="0" step="any" inputMode="decimal" value={minimumSectionWidth} onChange={event => setMinimumSectionWidth(event.target.value)} /><small>cm</small></span></label>
+            <label>Distancia mínima entre skeleton y borde <span><input aria-label="Distancia mínima entre skeleton y borde para formar una partida" type="number" min="0" step="any" inputMode="decimal" value={minimumSectionWidth} disabled={preferBorder} onChange={event => setMinimumSectionWidth(event.target.value)} /><small>cm</small></span></label>
           </div>
+          {preferBorder && <small className="spacing-hint">Las partidas se aplican al acomodo completo.</small>}
         </section>
 
         <section className="panel-section wiring-section">
@@ -427,6 +430,13 @@ export default function App() {
             <label className={showLedDistribution ? 'active led-toggle' : 'led-toggle'}><input type="checkbox" checked={showLedDistribution} onChange={event => setShowLedDistribution(event.target.checked)} />MÓDULOS LED</label>
             <label className={showSerpent ? 'active serpent-toggle' : 'serpent-toggle'}><input type="checkbox" checked={showSerpent} onChange={event => setShowSerpent(event.target.checked)} />RECORRIDO SERPIENTE</label>
             <label className={showPigtails ? 'active connection-toggle' : 'connection-toggle'}><input type="checkbox" checked={showPigtails} onChange={event => setShowPigtails(event.target.checked)} />PIGTAILS Y CONEXIONES</label>
+            <button type="button" className={`border-mode-button${preferBorder ? ' active' : ''}`}
+              aria-pressed={preferBorder} disabled={reading}
+              title="Iluminación indirecta: una fila junto al contorno exterior de cada pieza"
+              onClick={() => { setPreferBorder(value => !value); if (!preferBorder) { setShowLedDistribution(true); setShowSerpent(true); } }}>
+              <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="2" y="2" width="16" height="16" rx="2" /><path d="M6 6h8v8H6Z" strokeDasharray="2 2" /></svg>
+              SOLO BORDE
+            </button>
             <button type="button" className={`led-count-button led-toggle${showLedDistribution ? ' active' : ''}`}
               aria-pressed={showLedDistribution} disabled={!canCountLeds || reading}
               title={canCountLeds ? 'Mostrar u ocultar los módulos LED' : 'Carga un archivo y completa las medidas para calcular los LEDs'}
@@ -435,13 +445,14 @@ export default function App() {
             </button>
           </div>
         </div>
+        {preferBorder && <p className="border-mode-hint">Iluminación indirecta · Una sola fila junto al contorno exterior de cada pieza. El retiro se adapta al tamaño del módulo.</p>}
         {loadingLabel && <div className="loading-indicator" role="status">
           <span>{loadingLabel}</span>
           <div className="loading-track" role="progressbar" aria-label={loadingLabel} aria-valuetext="En curso"><span /></div>
         </div>}
         {filename && (showSkeleton || needPlacement) && <div className="geometry-status">
           {showSkeleton && skeleton?.units === 'svg' && <span>Skeleton en unidades SVG · indica las medidas físicas para Partidas.</span>}
-          {needPlacement && (!physicalSizeReady ? <span>Indica ancho y alto del SVG en cm.</span> : !partitionInputValid ? <span>Revisa el ancho mínimo local.</span> : needDistribution && !moduleGeometry ? <span>Completa largo, ancho y ambos pigtails del módulo.</span> : null)}
+          {needPlacement && (!physicalSizeReady ? <span>Indica ancho y alto del SVG en cm.</span> : !preferBorder && !partitionInputValid ? <span>Revisa el ancho mínimo local.</span> : needDistribution && !moduleGeometry ? <span>Completa largo, ancho y ambos pigtails del módulo.</span> : null)}
           {geometryWarnings.length > 0 && <details className="division-hint"><summary>{geometryWarnings.length} aviso(s) de geometría</summary><ul>{geometryWarnings.map(warning => <li key={warning}>{measurementText(warning)}</li>)}</ul></details>}
           {!!ledDistribution?.rowBreaks?.length && <span>{ledDistribution.rowBreaks.length} tramo(s) de fila superan el alcance de los pigtails; las guías quedan separadas.</span>}
           {showPigtails && serpentBreakCount > 0 && <span>{serpentBreakCount} conexión(es) pendiente(s): no se encontró una ruta libre dentro del límite de los pigtails.</span>}
@@ -462,7 +473,7 @@ export default function App() {
             {showSkeleton && skeleton?.nodes.filter(node => node.kind === 'point').map(node => <circle key={node.id} data-skeleton-point={node.id} cx={node.point.x / skeleton.scale.x} cy={node.point.y / skeleton.scale.y} r={span * 0.004} className="skeleton-point"><title>Skeleton puntual · sin eje direccional</title></circle>)}
             {showLedRoutes && ledRoutes.map(path => <path key={path.id} data-led-route={path.divisionId} data-led-run={path.id} d={path.d} className="led-route"><title>Recorrido candidato a mitad entre el skeleton y el borde</title></path>)}
             {showSerpent && serpentGuides && [...new Set(serpentGuides.paths.map(path => path.regionId))].map(regionId => <g key={regionId} data-serpent-scope={regionId} aria-label="Guías del recorrido serpiente">
-              {serpentGuides.paths.filter(path => path.regionId === regionId).map(path => <path key={path.id} data-serpent-guide={path.id} data-serpent-source={path.origin} d={path.d} className="serpent-line"><title>{path.origin === 'partition' ? 'Partida automática' : 'Skeleton sin partidas'}</title></path>)}
+              {serpentGuides.paths.filter(path => path.regionId === regionId).map(path => <path key={path.id} data-serpent-guide={path.id} data-serpent-source={path.origin} d={path.d} className="serpent-line"><title>{path.origin === 'border' ? 'Recorrido por el borde para iluminación indirecta' : path.origin === 'partition' ? 'Partida automática' : 'Skeleton sin partidas'}</title></path>)}
             </g>)}
             {showPigtails && wireScale && ledDistribution && <g aria-label="Pigtails y conexiones" data-wiring-layer>
               {serpents.flatMap(serpent => serpent.links.map(link => {

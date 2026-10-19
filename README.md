@@ -27,6 +27,7 @@ npm run preview
 3. En **Módulo LED**, indica largo, ancho y longitud de los pigtails izquierdo y derecho.
 4. Ajusta la distancia mínima entre skeleton y borde para determinar dónde se pueden formar partidas.
 5. Activa las capas que quieras revisar. El botón **TOTAL LED** muestra el total calculado y también muestra u oculta los módulos.
+6. Para iluminación indirecta, activa **SOLO BORDE**. Al desactivarlo vuelves al acomodo completo con skeleton y partidas.
 
 Las capas calculadas usan las medidas físicas en centímetros. Sin ancho y alto físicos, SkLed puede mostrar el contorno y un skeleton aproximado en unidades SVG, pero no genera partidas ni una distribución física de LEDs.
 
@@ -73,6 +74,16 @@ Filtros físicos de colocación:
 Por eso el total puede ser menor que el número de espacios sugeridos por las guías: se cuentan solo los módulos que pasan las comprobaciones geométricas y de separación.
 
 ### RECORRIDO SERPIENTE
+
+#### Modo SOLO BORDE
+
+El botón **SOLO BORDE** recalcula los módulos para iluminación indirecta: genera un único trazado interior paralelo al contorno exterior de cada pieza rellena. Calcula el retiro en milímetros según el tamaño del cuerpo LED y el espacio que necesita al girar en las curvas. Los huecos limitan el espacio disponible y no generan filas adicionales.
+
+Este modo conserva las comprobaciones del cuerpo completo, los huecos, las colisiones y la separación automática de pigtails. Si un estrechamiento divide el contorno retirado, conserva el trazado principal y muestra un aviso; si no cabe ningún módulo, también lo indica. El valor de **Partidas** se mantiene guardado y vuelve a aplicarse al desactivar el botón.
+
+El retiro del contorno usa `clipper-lib` 6.4.2, bajo Boost Software License 1.0 ([documentación del proyecto](https://github.com/junmer/clipper-lib)).
+
+#### Acomodo completo
 
 Combina las partidas válidas con los tramos restantes del skeleton. Donde una partida cubre el skeleton, sustituye ese tramo por las dos guías paralelas; el resto del eje central se conserva. Los pares incompletos se descartan para evitar dejar una sola guía y se mantiene el skeleton en ese tramo.
 

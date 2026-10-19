@@ -6,21 +6,29 @@ import { distributeLeds } from './distribution';
 import type { LedDistributionResult, PlacementOptions } from './distribution';
 import type { ModuleMeasurements } from './module';
 import type { SvgModel } from './types';
-import type { buildRegions } from './regions';
+import { buildRegions } from './regions';
 import { composeSerpentGuides, singleLedPartitionIds } from './serpent-guides';
 import type { SerpentGuide, SerpentGuides } from './serpent-guides';
 import { filterSkeletonSpurs } from './skeleton-filter';
 import { recoverMissingCoverageGuides, restoreCoverageBranches } from './skeleton-coverage';
 import { repairCoverageLayout } from './coverage-layout';
+import { generateBorderLayout } from './border-layout';
 
 export interface LayoutResult { skeleton: SkeletonResult; sourceSkeleton: SkeletonResult; divisions: PartitionResult | null; serpentGuides: SerpentGuides | null; distribution: LedDistributionResult | null }
-export interface LayoutPlacement { config: PartitionConfig; measurements: ModuleMeasurements | null; options: PlacementOptions }
+export interface LayoutPlacement { mode?: 'full' | 'border'; config: PartitionConfig; measurements: ModuleMeasurements | null; options: PlacementOptions }
 export interface LayoutInput { model: SvgModel; geometry?: ReturnType<typeof buildRegions>; physicalSize?: { widthMm: number; heightMm: number }; skeleton?: SkeletonResult; placement: LayoutPlacement | null; coverageMeasurements?: ModuleMeasurements }
 
 self.onmessage = (event: MessageEvent<LayoutInput>) => {
   try {
     const { model, geometry, physicalSize, placement } = event.data;
     const sourceSkeleton = event.data.skeleton ?? generateSkeleton(model, physicalSize, geometry);
+    if (placement?.mode === 'border' && physicalSize) {
+      const { guides, distribution } = generateBorderLayout(model, geometry ?? buildRegions(model.figures),
+        physicalSize, placement.measurements, placement.options);
+      self.postMessage({ result: { sourceSkeleton, skeleton: sourceSkeleton,
+        divisions: { ...guides, paths: [] }, serpentGuides: guides, distribution } satisfies LayoutResult });
+      return;
+    }
     let skeleton = sourceSkeleton.units === 'mm' ? filterSkeletonSpurs(sourceSkeleton) : sourceSkeleton;
     const coverageMeasurements = event.data.coverageMeasurements ?? placement?.measurements;
     if (coverageMeasurements && physicalSize) {
