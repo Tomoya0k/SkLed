@@ -95,6 +95,10 @@ Esta capa es una guía geométrica: no representa la longitud real del cable ni 
 
 Traza los pigtails y las rutas posibles entre módulos. El límite físico de cada conexión es la suma de las longitudes disponibles de los pigtails de ambos extremos. La ruta debe permanecer dentro de la figura, rodear los huecos y no superar ese alcance; si no se encuentra una ruta válida, el salto queda pendiente y se muestra un aviso.
 
+**Completar saltos con cable adicional** permite construir un recorrido cuando los pigtails no alcanzan. Empieza desactivado. Al activarlo, busca rutas interiores y dibuja en **amarillo** únicamente la porción de cable que falta después de descontar los pigtails disponibles. El panel muestra el número de puentes y la longitud adicional total; es una medida geométrica a la que hay que añadir margen de montaje. Los puentes conservan las comprobaciones de contorno, huecos y cuerpos. No unen piezas separadas: cada pieza necesita su propia alimentación. Los saltos sin una ruta interior válida siguen pendientes.
+
+Con **PIGTAILS Y CONEXIONES** activo, los números y las flechas de los módulos siguen el orden real de conexión. Un punto verde indica la entrada de cada pieza y uno rosa su salida. El estado informa cuántos LEDs y piezas tienen recorrido y si quedan saltos pendientes. Esto también funciona con **SOLO BORDE**.
+
 El filtro **Descartar conexiones que chocan con módulos LED** está activado por defecto. Al desactivarlo se permite que las rutas pasen sobre otros cuerpos. La capa muestra conexiones logradas y pigtails que quedan libres; no dibuja el cuerpo LED.
 
 ## Importación y geometría

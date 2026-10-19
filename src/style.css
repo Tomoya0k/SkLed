@@ -78,6 +78,10 @@ h1, h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .source-pigtail, .open-pigtail { stroke: #ff6874; }
 .target-pigtail { stroke: #4be4da; }
 .wiring-bridge { stroke: #ffd36b; stroke-width: 2.2; }
+.cable-status { color: #ffd36b; }
+.wiring-endpoint { stroke: #071009; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.wiring-entrada { fill: #60ff83; }
+.wiring-salida { fill: #ff72c4; }
 .notice { padding: 10px 13px; border: 1px solid; border-radius: 4px; font-size: 11px; line-height: 1.5; }
 .notice.error { background: #351c20; border-color: #884950; color: #ffb9c1; display: flex; justify-content: space-between; align-items: flex-start; }
 .notice.error button { border: 0; background: transparent; font-size: 18px; color: inherit; }

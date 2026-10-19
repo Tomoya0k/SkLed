@@ -111,13 +111,16 @@ function insideRegions(point: Point, regions: Region[]): boolean {
 }
 
 function segmentInside(a: Point, b: Point, regions: Region[]): boolean {
-  if (!regions.length) return false;
-  const steps = Math.max(2, Math.ceil(distance(a, b) / 0.4));
-  for (let index = 0; index <= steps; index++) {
-    const fraction = index / steps;
-    if (!insideRegions({ x: a.x + (b.x - a.x) * fraction, y: a.y + (b.y - a.y) * fraction }, regions)) return false;
-  }
-  return true;
+  // Sampling every 0.4 mm missed short notches on tightly curved lettering.
+  // Interior endpoints plus exact boundary intersection tests cover the whole
+  // segment, including holes smaller than the old sampling interval.
+  return regions.some(region => {
+    if (!insideRegions(a, [region]) || !insideRegions(b, [region])) return false;
+    for (const loop of [region.outer, ...(region.holes ?? (region.inner ? [region.inner] : []))]) {
+      for (let i = 0; i < loop.length; i++) if (segmentsIntersect(a, b, loop[i], loop[(i + 1) % loop.length])) return false;
+    }
+    return true;
+  });
 }
 
 function cross(a: Point, b: Point, c: Point): number {
@@ -272,10 +275,10 @@ export function createPigtailChecker(regions: GeometryRegion[], paths: DivisionP
   };
 }
 
-/** Ordered connections for a snake, strictly within the available pigtails.
- * Detours count toward the limit; supplementary cable is never accepted. */
+/** Ordered connections for a snake. Detours count toward the pigtail limit.
+ * Optional bridges retain that limit and measure the missing cable explicitly. */
 export function createSerpentCableRouter(regions: GeometryRegion[], paths: DivisionPath[], modules: LedPlacement[],
-  measurements: ModuleMeasurements, scale: Scale, avoidModuleCollisions = true) {
+  measurements: ModuleMeasurements, scale: Scale, avoidModuleCollisions = true, allowBridges = false) {
   createModuleGeometry(measurements);
   const surfaces: Region[] = regions.map(region => ({ outer: region.outer.map(p => toMm(p, scale)), inner: null, holes: region.holes.map(hole => hole.map(p => toMm(p, scale))) }));
   const guides = new Map(paths.map(path => [path.id, makeGuide(path, scale)]));
@@ -365,7 +368,8 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
     for (let id = end; id >= 0; id = previous[id]) route.push(points[id]);
     route.push(a.mm); return route.reverse();
   };
-  let grid: { mask: Uint8Array; columns: number; rows: number; cell: number; minX: number; minY: number } | null = null;
+  let grid: { mask: Uint8Array; columns: number; rows: number; cell: number; minX: number; minY: number;
+    boundaries: Map<string, Array<[Point, Point]>> } | null = null;
   const prepareGrid = () => {
     if (grid) return grid;
     const points = surfaces.flatMap(region => region.outer);
@@ -390,10 +394,26 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
         if (Math.abs(dx * tx + dy * ty) <= length / 2 + 0.3 && Math.abs(dx * nx + dy * ny) <= width / 2 + 0.3) mask[y * columns + x] = 0;
       }
     }
-    grid = { mask, columns, rows, cell, minX, minY }; return grid;
+    // Index boundaries near each raster edge. Checking exact intersections in
+    // A* prevents corner shortcuts and sub-cell notches; rejecting only the
+    // final smoothed path could discard an otherwise reachable detour.
+    const boundaries = new Map<string, Array<[Point, Point]>>();
+    for (const region of surfaces) for (const loop of [region.outer, ...(region.holes ?? [])]) for (let i = 0; i < loop.length; i++) {
+      const a = loop[i], b = loop[(i + 1) % loop.length];
+      const steps = Math.max(1, Math.ceil(Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y)) / cell * 2));
+      const seen = new Set<string>();
+      for (let step = 0; step <= steps; step++) {
+        const x = Math.floor((a.x + (b.x - a.x) * step / steps - minX) / cell);
+        const y = Math.floor((a.y + (b.y - a.y) * step / steps - minY) / cell);
+        const key = `${x},${y}`;
+        if (seen.has(key)) continue;
+        seen.add(key); boundaries.set(key, [...(boundaries.get(key) ?? []), [a, b]]);
+      }
+    }
+    grid = { mask, columns, rows, cell, minX, minY, boundaries }; return grid;
   };
   const rasterRoute = (a: Terminal, b: Terminal): Point[] | null => {
-    const { mask, columns, rows, cell, minX, minY } = prepareGrid();
+    const { mask, columns, rows, cell, minX, minY, boundaries } = prepareGrid();
     const point = (id: number) => ({ x: minX + (id % columns) * cell, y: minY + Math.floor(id / columns) * cell });
     const attachments = (terminal: Terminal) => {
       const cx = Math.round((terminal.mm.x - minX) / cell), cy = Math.round((terminal.mm.y - minY) / cell);
@@ -421,6 +441,11 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
         const nx = x + dx, ny = y + dy, id = ny * columns + nx;
         if (nx < 0 || nx >= columns || ny < 0 || ny >= rows || !mask[id] || (dx && dy && (!mask[y * columns + nx] || !mask[ny * columns + x]))) continue;
+        const from = point(current.id), to = point(id);
+        let crosses = false;
+        for (let by = y - 1; by <= y + 1 && !crosses; by++) for (let bx = x - 1; bx <= x + 1 && !crosses; bx++)
+          for (const [c, d] of boundaries.get(`${bx},${by}`) ?? []) if (segmentsIntersect(from, to, c, d)) { crosses = true; break; }
+        if (crosses) continue;
         const nextCost = costs[current.id] + Math.hypot(dx, dy) * cell;
         if (nextCost >= costs[id]) continue;
         costs[id] = nextCost; previous[id] = current.id;
@@ -448,12 +473,24 @@ export function createSerpentCableRouter(regions: GeometryRegion[], paths: Divis
     if (cache.has(key)) return cache.get(key)!;
     const a = terminals.get(`${first.id}:${fromSide}`)!, b = terminals.get(`${second.id}:${toSide}`)!;
     const limit = Math.min(a.availableMm + b.availableMm, measurements.leftPigtailMm + measurements.rightPigtailMm);
-    if (distance(a.mm, b.mm) > limit + 1e-6) { cache.set(key, null); return null; }
+    if (!allowBridges && distance(a.mm, b.mm) > limit + 1e-6) { cache.set(key, null); return null; }
     const guide = first.divisionId === second.divisionId ? guides.get(first.divisionId) ?? undefined : undefined;
     const withinReach = (route: Point[] | null) => route && routeLength(route) <= limit + 1e-6 ? route : null;
-    const route = withinReach(terminalPairRoute(a, b, surfaces, guide, bodies, avoidModuleCollisions)) ?? withinReach(networkRoute(a, b)) ?? withinReach(rasterRoute(a, b));
+    const direct = terminalPairRoute(a, b, surfaces, guide, bodies, avoidModuleCollisions);
+    let route = withinReach(direct);
+    if (!route) {
+      const network = networkRoute(a, b);
+      route = withinReach(network);
+      if (!route && allowBridges) route = [direct, network].filter((path): path is Point[] => !!path)
+        .sort((a, b) => routeLength(a) - routeLength(b))[0] ?? null;
+      if (!route) {
+        const raster = rasterRoute(a, b);
+        route = allowBridges ? raster : withinReach(raster);
+      }
+    }
     const lengthMm = route ? routeLength(route) : 0;
-    const result = route ? asLink({ a, b, routeMm: route, lengthMm, bridgeLengthMm: 0 }, cache.size, scale) : null;
+    const result = route ? asLink({ a, b, routeMm: route, lengthMm,
+      bridgeLengthMm: Math.max(0, lengthMm - limit) }, cache.size, scale) : null;
     cache.set(key, result); return result;
   };
 }
@@ -487,8 +524,9 @@ class Forest {
 
 function asLink(candidate: Candidate, index: number, scale: Scale): ConnectionLink {
   const kind: ConnectionKind = candidate.bridgeLengthMm > 1e-6 ? 'bridge' : 'pigtail';
-  const fromUsed = Math.min(candidate.a.availableMm, candidate.lengthMm);
-  const toUsed = kind === 'pigtail' ? candidate.lengthMm - fromUsed : Math.min(candidate.b.availableMm, candidate.lengthMm - fromUsed);
+  const available = candidate.lengthMm - candidate.bridgeLengthMm;
+  const fromUsed = Math.min(candidate.a.availableMm, available);
+  const toUsed = available - fromUsed;
   const atDistance = (target: number): Point => {
     for (let i = 1; i < candidate.routeMm.length; i++) {
       const a = candidate.routeMm[i - 1], b = candidate.routeMm[i], length = distance(a, b);
@@ -497,7 +535,7 @@ function asLink(candidate: Candidate, index: number, scale: Scale): ConnectionLi
     }
     return toSvg(candidate.routeMm.at(-1)!, scale);
   };
-  const bridgeSegment: [Point, Point] | null = kind === 'bridge' ? [atDistance(candidate.a.availableMm), atDistance(candidate.lengthMm - candidate.b.availableMm)] : null;
+  const bridgeSegment: [Point, Point] | null = kind === 'bridge' ? [atDistance(fromUsed), atDistance(candidate.lengthMm - toUsed)] : null;
   return {
     id: `link-${index + 1}`, kind,
     fromId: candidate.a.module.id, toId: candidate.b.module.id,

@@ -144,6 +144,7 @@ export default function App() {
   const [selectedFigureId, setSelectedFigureId] = useState<string | null>(null);
   const [minimumSectionWidth, setMinimumSectionWidth] = useState('10');
   const [avoidModuleCollisions, setAvoidModuleCollisions] = useState(true);
+  const [allowBridges, setAllowBridges] = useState(false);
   const [svgWidth, setSvgWidth] = useState('');
   const [svgHeight, setSvgHeight] = useState('');
   const [aspectLocked, setAspectLocked] = useState(true);
@@ -249,10 +250,14 @@ export default function App() {
     worker.onerror = () => { setSerpentPlanning(false); setError('No se pudo calcular el recorrido serpiente.'); worker.terminate(); };
     worker.postMessage({ model, divisions: serpentGuides, distribution: ledDistribution,
       measurements: { lengthMm: mm(moduleLength), widthMm: mm(moduleWidth), leftPigtailMm: mm(leftPigtail), rightPigtailMm: mm(rightPigtail) },
-      widthMm: mm(svgWidth), heightMm: mm(svgHeight), avoidModuleCollisions });
+      widthMm: mm(svgWidth), heightMm: mm(svgHeight), avoidModuleCollisions, allowBridges });
     return () => worker.terminate();
-  }, [avoidModuleCollisions, showPigtails, serpentGuides, ledDistribution, moduleGeometry, model, moduleLength, moduleWidth, leftPigtail, rightPigtail, svgWidth, svgHeight]);
+  }, [avoidModuleCollisions, allowBridges, showPigtails, serpentGuides, ledDistribution, moduleGeometry, model, moduleLength, moduleWidth, leftPigtail, rightPigtail, svgWidth, svgHeight]);
   const serpentBreakCount = serpents.reduce((total, serpent) => total + serpent.breaks.length, 0);
+  const bridgeCount = serpents.reduce((total, serpent) => total + serpent.links.filter(link => link.kind === 'bridge').length, 0);
+  const extraCableMm = serpents.reduce((total, serpent) => total + serpent.extraCableMm, 0);
+  const routedModules = new Map(serpents.flatMap(serpent => serpent.steps).map((step, index) =>
+    [step.moduleId, { number: index + 1, reversed: step.entrySide === 'right' }]));
   const linkedTerminals = new Set(serpents.flatMap(serpent => serpent.links.flatMap(link => [`${link.fromId}:${link.fromSide}`, `${link.toId}:${link.toSide}`])));
   const wireScale = physicalSizeReady ? { x: mm(svgWidth) / model.viewBox.width, y: mm(svgHeight) / model.viewBox.height } : null;
 
@@ -404,6 +409,7 @@ export default function App() {
         <section className="panel-section wiring-section">
           <div className="section-heading"><h2>Pigtails y conexiones</h2></div>
           <label className="physical-filter"><input type="checkbox" checked={avoidModuleCollisions} onChange={event => setAvoidModuleCollisions(event.target.checked)} />Descartar conexiones que chocan con módulos LED</label>
+          <label className="physical-filter"><input type="checkbox" checked={allowBridges} onChange={event => setAllowBridges(event.target.checked)} />Completar saltos con cable adicional</label>
           <label className="minimum-gap-field">Separación mínima automática (pigtails − 1 cm) <span><output aria-label="Separación mínima automática entre módulos">{minimumPigtailGapMm === null ? '—' : formatCm(minimumPigtailGapMm)}</output><small>cm</small></span></label>
           <small className="spacing-hint">Los módulos con menos separación se omiten del recorrido.</small>
         </section>
@@ -454,8 +460,10 @@ export default function App() {
           {showSkeleton && skeleton?.units === 'svg' && <span>Skeleton en unidades SVG · indica las medidas físicas para Partidas.</span>}
           {needPlacement && (!physicalSizeReady ? <span>Indica ancho y alto del SVG en cm.</span> : !preferBorder && !partitionInputValid ? <span>Revisa el ancho mínimo local.</span> : needDistribution && !moduleGeometry ? <span>Completa largo, ancho y ambos pigtails del módulo.</span> : null)}
           {geometryWarnings.length > 0 && <details className="division-hint"><summary>{geometryWarnings.length} aviso(s) de geometría</summary><ul>{geometryWarnings.map(warning => <li key={warning}>{measurementText(warning)}</li>)}</ul></details>}
-          {!!ledDistribution?.rowBreaks?.length && <span>{ledDistribution.rowBreaks.length} tramo(s) de fila superan el alcance de los pigtails; las guías quedan separadas.</span>}
-          {showPigtails && serpentBreakCount > 0 && <span>{serpentBreakCount} conexión(es) pendiente(s): no se encontró una ruta libre dentro del límite de los pigtails.</span>}
+          {!!ledDistribution?.rowBreaks?.length && !(showPigtails && allowBridges && serpents.length) && <span>{ledDistribution.rowBreaks.length} tramo(s) de fila superan el alcance de los pigtails; las guías quedan separadas.</span>}
+          {showPigtails && serpents.length > 0 && <span>Recorrido: {routedModules.size} LED en {serpents.length} pieza(s) · {serpentBreakCount === 0 ? 'sin saltos pendientes' : `${serpentBreakCount} salto(s) pendiente(s)`}. Entrada verde; salida rosa. Los números y flechas indican el orden de conexión.</span>}
+          {showPigtails && bridgeCount > 0 && <span className="cable-status">{bridgeCount} puente(s) en amarillo · Cable adicional: {(extraCableMm / 10).toFixed(1)} cm. Medida geométrica; añade margen de montaje. Cada pieza lleva su propia alimentación.</span>}
+          {showPigtails && serpentBreakCount > 0 && <span>{serpentBreakCount} conexión(es) pendiente(s): no se encontró una ruta libre{allowBridges ? ' dentro de la figura' : ' dentro del límite de los pigtails'}.</span>}
         </div>}
         {error && <div role="alert" className="notice error"><span>{measurementText(error)}</span><button onClick={() => setError('')} aria-label="Cerrar error">×</button></div>}
         {model.warnings.length > 0 && <details className="notice warning"><summary>{model.warnings.length} {model.warnings.length === 1 ? 'aviso del SVG' : 'avisos del SVG'}</summary><ul>{model.warnings.map(warning => <li key={warning}>{measurementText(warning)}</li>)}</ul></details>}
@@ -478,13 +486,17 @@ export default function App() {
             {showPigtails && wireScale && ledDistribution && <g aria-label="Pigtails y conexiones" data-wiring-layer>
               {serpents.flatMap(serpent => serpent.links.map(link => {
                 const parts = connectionParts(link, wireScale);
-                return <g key={link.id} data-wiring-link={link.id}>
-                  <path data-connection={link.id} d={pathData(link.route)} className="wiring-connection"><title>Conexión entre módulos · {formatCm(link.lengthMm)} cm</title></path>
+                return <g key={link.id} data-wiring-link={link.id} data-connection-kind={link.kind}>
+                  <path data-connection={link.id} d={pathData(link.route)} className="wiring-connection"><title>Conexión entre módulos · {formatCm(link.lengthMm)} cm{link.kind === 'bridge' ? ` · Cable adicional: ${formatCm(link.bridgeLengthMm)} cm` : ' · Solo pigtails'}</title></path>
                   {parts.source.length > 1 && <path data-pigtail={`${link.fromId}:${link.fromSide}`} data-pigtail-for={link.fromId} data-pigtail-side={link.fromSide} d={pathData(parts.source)} className="wiring-pigtail source-pigtail" />}
                   {parts.target.length > 1 && <path data-pigtail={`${link.toId}:${link.toSide}`} data-pigtail-for={link.toId} data-pigtail-side={link.toSide} d={pathData(parts.target)} className="wiring-pigtail target-pigtail" />}
-                  {parts.connection.length > 1 && <path data-bridge={link.id} d={pathData(parts.connection)} className="wiring-bridge" />}
+                  {parts.connection.length > 1 && <path data-bridge={link.id} d={pathData(parts.connection)} className="wiring-bridge"><title>Cable adicional · {formatCm(link.bridgeLengthMm)} cm</title></path>}
                 </g>;
               }))}
+              {serpents.flatMap(serpent => ([['entrada', serpent.entry], ['salida', serpent.exit]] as const)
+                .flatMap(([kind, point]) => point ? [<circle key={`${serpent.scopeId}-${kind}`} data-wiring-endpoint={kind}
+                  cx={point.x} cy={point.y} r={Math.max(2, mm(moduleWidth) / wireScale.x * 0.13)}
+                  className={`wiring-endpoint wiring-${kind}`}><title>{kind === 'entrada' ? 'Entrada de alimentación de la pieza' : 'Salida del recorrido de la pieza'}</title></circle>] : []))}
               {ledDistribution.modules.flatMap(module => (['left', 'right'] as const).flatMap(side => {
                 const key = `${module.id}:${side}`;
                 if (linkedTerminals.has(key)) return [];
@@ -493,13 +505,20 @@ export default function App() {
                 return points.length > 1 ? [<path key={key} data-pigtail={key} data-pigtail-for={module.id} data-pigtail-side={side} d={pathData(points)} className="wiring-pigtail open-pigtail"><title>Pigtail libre · {formatCm(length)} cm</title></path>] : [];
               }))}
             </g>}
-            {showLedDistribution && ledDistribution?.modules.map(module => <g key={module.id} data-led-module={module.id} data-led-route-id={module.divisionId} data-figure={module.figureId} data-region={module.regionId}>
+            {showLedDistribution && ledDistribution?.modules.map(module => {
+              const routed = showPigtails ? routedModules.get(module.id) : undefined;
+              const number = routed?.number ?? module.number;
+              const labelPoint = routed?.reversed ? { x: 2 * module.center.x - module.labelPoint.x,
+                y: 2 * module.center.y - module.labelPoint.y } : module.labelPoint;
+              return <g key={module.id} data-led-module={module.id} data-led-route-id={module.divisionId} data-figure={module.figureId} data-region={module.regionId} data-wiring-order={routed?.number}>
               <polygon points={module.corners.map(point => `${point.x},${point.y}`).join(' ')} className="led-body" />
+              <g transform={routed?.reversed ? `rotate(180 ${module.center.x} ${module.center.y})` : undefined}>
               <line x1={module.directionStart.x} y1={module.directionStart.y} x2={module.directionEnd.x} y2={module.directionEnd.y} className="led-direction" />
               <polygon points={module.arrow.map(point => `${point.x},${point.y}`).join(' ')} className="led-arrow" />
-              <text x={module.labelPoint.x} y={module.labelPoint.y} className="led-number" fontSize={moduleLabelSize} dominantBaseline="middle" textAnchor="middle">{module.number}</text>
-              <title>{`Módulo ${module.number} · Figura ${module.figureNumber}`}</title>
-            </g>)}
+              </g>
+              <text x={labelPoint.x} y={labelPoint.y} className="led-number" fontSize={moduleLabelSize} dominantBaseline="middle" textAnchor="middle">{number}</text>
+              <title>{`Módulo ${number}${routed ? ' · Orden de conexión' : ` · Figura ${module.figureNumber}`}`}</title>
+            </g>})}
             {filename && <Dimensions bounds={dimensionBounds} widthLabel={`${formatWholeMeasure(dimensionWidth)} ${dimensionUnit}`} heightLabel={`${formatWholeMeasure(dimensionHeight)} ${dimensionUnit}`} fontSize={dimensionFontSize} span={span} />}
             {showContour && measurementTargets.map(figure => <path key={figure.id} data-figure-hit={figure.id} d={figure.d} fill="transparent" fillRule={figure.fillRule} stroke="transparent" strokeWidth="16" vectorEffect="non-scaling-stroke" pointerEvents="all" className="figure-hit" role="button" tabIndex={0} aria-label={`Medir figura ${figure.name}`} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedFigureId(current => current === figure.id ? null : figure.id); } }} />)}
           </svg>

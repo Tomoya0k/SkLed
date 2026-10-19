@@ -6,7 +6,7 @@ import { createSerpentCableRouter } from './connectivity';
 import type { ConnectionLink, TerminalSide } from './connectivity';
 import { buildRegions } from './regions';
 
-export interface SerpentOptions { scopeId: string; startId?: string | null; endId?: string | null; startSide?: TerminalSide | null; endSide?: TerminalSide | null; avoidModuleCollisions?: boolean }
+export interface SerpentOptions { scopeId: string; startId?: string | null; endId?: string | null; startSide?: TerminalSide | null; endSide?: TerminalSide | null; avoidModuleCollisions?: boolean; allowBridges?: boolean }
 export interface SerpentStep { moduleId: string; order: number; entrySide: TerminalSide; exitSide: TerminalSide; entry: Point; exit: Point }
 export interface SerpentResult {
   scopeId: string;
@@ -51,11 +51,11 @@ export function planSerpent(model: SvgModel, divisions: DivisionResult, distribu
   const start = modules.find(module => module.id === options.startId) ?? longest.find(module => module.id !== options.endId) ?? longest[0];
   const end = modules.find(module => module.id === options.endId && module.id !== start.id) ?? null;
   const regions = (divisions.regions ?? buildRegions(model.figures).regions).filter(region => region.id === options.scopeId || (!modules[0].regionId && region.figureId === modules[0].figureId));
-  const router = createSerpentCableRouter(regions, divisions.paths.filter(path => !path.regionId || regions.some(region => region.id === path.regionId)), modules, measurements, scale, options.avoidModuleCollisions ?? true);
+  const router = createSerpentCableRouter(regions, divisions.paths.filter(path => !path.regionId || regions.some(region => region.id === path.regionId)), modules, measurements, scale, options.avoidModuleCollisions ?? true, options.allowBridges ?? false);
   const sides: TerminalSide[] = ['left', 'right'];
   // Missing links dominate length. Evaluate terminal orientations together so
   // a nearby row does not consume the terminal needed by the following row.
-  const connectionCost = (a: LedPlacement, b: LedPlacement, link: ConnectionLink | null) => link ? link.lengthMm : 1e7 + gap(a, b);
+  const connectionCost = (a: LedPlacement, b: LedPlacement, link: ConnectionLink | null) => link ? link.lengthMm + link.bridgeLengthMm * 4 : 1e7 + gap(a, b);
   const evaluate = (ordered: LedPlacement[]) => {
     const fixedStartSide = options.startId === ordered[0].id ? options.startSide : null;
     const fixedEndSide = options.endId === ordered.at(-1)!.id ? options.endSide : null;
@@ -138,7 +138,7 @@ export function planSerpent(model: SvgModel, divisions: DivisionResult, distribu
     if (i > 0) {
       const link = chosenLinks[i][side];
       if (link) links.unshift({ ...link, id: `serpent-link-${options.scopeId}-${i}` });
-      else missing.unshift({ fromId: ordered[i - 1].id, toId: ordered[i].id, from: terminal(ordered[i - 1], opposite(sides[previous[i][side]])), to: terminal(ordered[i], sides[side]), reason: `Pendiente: no se encontró una ruta libre dentro del alcance de los pigtails (máximo ${measurements.leftPigtailMm + measurements.rightPigtailMm} mm).` });
+      else missing.unshift({ fromId: ordered[i - 1].id, toId: ordered[i].id, from: terminal(ordered[i - 1], opposite(sides[previous[i][side]])), to: terminal(ordered[i], sides[side]), reason: options.allowBridges ? 'Pendiente: no se encontró una ruta libre dentro de la figura.' : `Pendiente: no se encontró una ruta libre dentro del alcance de los pigtails (máximo ${measurements.leftPigtailMm + measurements.rightPigtailMm} mm).` });
       side = previous[i][side];
     }
   }
@@ -147,7 +147,9 @@ export function planSerpent(model: SvgModel, divisions: DivisionResult, distribu
   if (options.startId && !modules.some(module => module.id === options.startId)) warnings.push('El inicio anterior ya no existe en esta distribución; selecciona otro LED.');
   if (options.endId && !modules.some(module => module.id === options.endId)) warnings.push('La salida anterior ya no existe en esta distribución; selecciona otro LED.');
   else if (options.endId && !end && modules.length > 1) warnings.push('Selecciona una salida distinta del inicio y dentro de la misma figura.');
-  if (missing.length) warnings.push(`${missing.length} salto(s) pendientes: no se encontró una ruta libre dentro del límite de los pigtails; el recorrido no es continuo.`);
+  const extraCableMm = links.reduce((sum, link) => sum + link.bridgeLengthMm, 0);
+  if (extraCableMm > 1e-6) warnings.push(`El recorrido requiere ${extraCableMm.toFixed(1)} mm de cable adicional; los puentes no son conexiones directas de pigtails.`);
+  if (missing.length) warnings.push(`${missing.length} salto(s) pendientes: no se encontró una ruta libre${options.allowBridges ? '' : ' dentro del límite de los pigtails'}; el recorrido no es continuo.`);
   return { scopeId: options.scopeId, steps, links, breaks: missing, startId: ordered[0].id, endId: ordered.at(-1)!.id,
-    entry: steps[0].entry, exit: steps.at(-1)!.exit, extraCableMm: 0, continuous: missing.length === 0, warnings };
+    entry: steps[0].entry, exit: steps.at(-1)!.exit, extraCableMm, continuous: missing.length === 0, warnings };
 }
