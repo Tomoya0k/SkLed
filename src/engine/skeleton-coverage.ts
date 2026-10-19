@@ -87,7 +87,12 @@ function guideOnUncoveredSkeletonEdge(edge: SkeletonEdge, measurements: ModuleMe
   }
   const region = skeleton.regions.find(item => item.id === edge.regionId);
   if (!region) return null;
-  return coverageGuide(`${edge.id}-branch-led`, edge.figureId, edge.regionId, region.outerContourId, line, skeleton.scale, edge.id);
+  const guide = coverageGuide(`${edge.id}-branch-led`, edge.figureId, edge.regionId, region.outerContourId, line, skeleton.scale, edge.id);
+  // Let the normal body/region check slide the module within this short branch.
+  // Locking its center to the branch midpoint can miss a wider pocket near a
+  // junction even when the whole LED body fits elsewhere along the stem.
+  guide.bodyFiltered = false;
+  return guide;
 }
 
 function guideInEmptyRegion(region: SkeletonResult['regions'][number], measurements: ModuleMeasurements,
