@@ -46,6 +46,8 @@ export interface PlacementOptions {
   bodyGapMm?: number;
   edgeMarginMm?: number;
   independentPaths?: boolean;
+  /** Internal coverage reflow plan. Positions still pass all physical checks. */
+  positionsByGuideMm?: Record<string, number[]>;
 }
 
 export interface PhysicalScale { x: number; y: number }
@@ -173,7 +175,7 @@ export function insideRegion(rectangle: Rectangle, region: Region, clearance: nu
   return true;
 }
 
-function overlaps(a: Rectangle, b: Rectangle): boolean {
+export function overlaps(a: Rectangle, b: Rectangle): boolean {
   for (const axis of [a.tangent, a.normal, b.tangent, b.normal]) {
     const projection = (point: Point) => point.x * axis.x + point.y * axis.y;
     const aValues = a.corners.map(projection), bValues = b.corners.map(projection);
@@ -253,116 +255,128 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
         (overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < Math.max(bodyGap, minimumGap))) &&
       !local.some(other => overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < Math.max(bodyGap, minimumGap));
     let best: Proposal[] = [];
-    for (const phase of [0, 0.15, -0.15]) {
-      const proposals: Proposal[] = [];
-      for (let slot = 0; slot < slots; slot++) {
-        const base = (division.cornerBranch ? route.length - lengthMm / 2 : route.closed ? (slot + 0.5) * pitch : slots === 1 ? route.length / 2 : lengthMm / 2 + slot * pitch) + phase * pitch;
-        for (const shift of [0, -0.12, 0.12, -0.24, 0.24, -0.36, 0.36, -0.5, 0.5]) {
-          const rawPosition = base + shift * pitch;
-          const position = route.closed ? (rawPosition % route.length + route.length) % route.length : rawPosition;
-          // Filtered partitions cannot reintroduce bodies extending beyond a
-          // short guide. Legacy guides retain their original placement rules.
-          if (!fitsGuide(position)) continue;
-          const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
-          if (candidate && valid(candidate, proposals)) { proposals.push({ rectangle: candidate, position }); break; }
+    const planned = options.positionsByGuideMm?.[division.id];
+    let omittedTip = 0;
+    if (planned) {
+      for (const position of [...planned].sort((a, b) => a - b)) {
+        const rectangle = makeRectangle(route, position, lengthMm, bodyWidthMm);
+        if (!Number.isFinite(position) || !fitsGuide(position) || !rectangle || !valid(rectangle, best)) {
+          throw new Error('La redistribución de cobertura no conserva el espacio físico de los módulos.');
         }
+        best.push({ position, rectangle });
       }
-      if (proposals.length > best.length) best = proposals;
-      if (best.length === slots) break;
-    }
-    best.sort((a, b) => a.position - b.position);
-    // A failed slot must not leave the surviving LEDs anchored to the old
-    // layout's end. Refit a complete, centered row for the count that fits,
-    // checking the same body clearance and spacing constraints as before.
-    if (!route.closed && best.length && !division.cornerBranch) {
-      let centered: Proposal[] | null = null;
-      for (let count = slots; count >= best.length && !centered; count--) {
-        const roomGap = count > 1 ? (route.length - count * lengthMm) / (count - 1) : 0;
-        const largestGap = Math.min(maximumGap, roomGap);
-        const gaps = count === 1 ? [0] : [desiredGap, (desiredGap + largestGap) / 2, largestGap];
-        for (const gap of gaps) {
-          if (count > 1 && (gap < minimumGap - 1e-6 || gap > maximumGap + 1e-6)) continue;
-          const pitch = lengthMm + gap;
-          const start = (route.length - (count - 1) * pitch) / 2;
-          const proposals: Proposal[] = [];
-          for (let slot = 0; slot < count; slot++) {
-            const position = start + slot * pitch;
-            if (!fitsGuide(position)) break;
-            const rectangle = makeRectangle(route, position, lengthMm, bodyWidthMm);
-            if (!rectangle || !valid(rectangle, proposals)) break;
-            proposals.push({ position, rectangle });
+    } else {
+      for (const phase of [0, 0.15, -0.15]) {
+        const proposals: Proposal[] = [];
+        for (let slot = 0; slot < slots; slot++) {
+          const base = (division.cornerBranch ? route.length - lengthMm / 2 : route.closed ? (slot + 0.5) * pitch : slots === 1 ? route.length / 2 : lengthMm / 2 + slot * pitch) + phase * pitch;
+          for (const shift of [0, -0.12, 0.12, -0.24, 0.24, -0.36, 0.36, -0.5, 0.5]) {
+            const rawPosition = base + shift * pitch;
+            const position = route.closed ? (rawPosition % route.length + route.length) % route.length : rawPosition;
+            // Filtered partitions cannot reintroduce bodies extending beyond a
+            // short guide. Legacy guides retain their original placement rules.
+            if (!fitsGuide(position)) continue;
+            const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
+            if (candidate && valid(candidate, proposals)) { proposals.push({ rectangle: candidate, position }); break; }
           }
-          if (proposals.length === count) { centered = proposals; break; }
         }
-      }
-      if (centered) best = centered;
-    }
-    // Fit closed rows as a whole ring. Independent slot shifts otherwise push
-    // accumulated spacing error into the seam, leaving a long empty arc.
-    if (route.closed && best.length) {
-      let ring: Proposal[] | null = null;
-      for (let count = slots; count >= best.length && !ring; count--) {
-        const ringPitch = route.length / count;
-        if (ringPitch - lengthMm > maximumGap + 1e-6) break;
-        for (let phase = 0; phase < 24 && !ring; phase++) {
-          const proposals: Proposal[] = [];
-          for (let slot = 0; slot < count; slot++) {
-            const position = (slot + phase / 24) * ringPitch;
-            const rectangle = makeRectangle(route, position, lengthMm, bodyWidthMm);
-            if (!rectangle || !valid(rectangle, proposals)) break;
-            proposals.push({ position, rectangle });
-          }
-          if (proposals.length === count) ring = proposals;
-        }
-      }
-      if (ring) best = ring;
-    }
-    // Repair a skipped slot where another physical body can bridge the gap.
-    for (let i = 1; i < best.length; i++) {
-      const gap = Math.max(rectangleGap(best[i - 1].rectangle, best[i].rectangle), best[i].position - best[i - 1].position - lengthMm);
-      if (gap <= maximumGap + 1e-5) continue;
-      const before = best[i - 1], after = best[i];
-      let repaired = false;
-      for (const [item, direction] of [[after, -1], [before, 1]] as const) {
-        const position = item.position + direction * (gap - maximumGap + 1);
-        if (!fitsGuide(position)) continue;
-        const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
-        if (!candidate || !valid(candidate, best.filter(other => other !== item))) continue;
-        item.position = position; item.rectangle = candidate;
-        if (Math.max(rectangleGap(before.rectangle, after.rectangle), after.position - before.position - lengthMm) <= maximumGap + 1e-5) { repaired = true; break; }
-      }
-      if (repaired) continue;
-      const positions = [(before.position + after.position) / 2, before.position + lengthMm + desiredGap, after.position - lengthMm - desiredGap];
-      for (let at = before.position + lengthMm + minimumGap; at <= after.position - lengthMm - minimumGap; at += Math.max(1, bodyWidthMm / 3)) positions.push(at);
-      for (const position of positions) {
-        if (!fitsGuide(position)) continue;
-        const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
-        if (candidate && valid(candidate, best)) { best.splice(i, 0, { rectangle: candidate, position }); i--; break; }
-      }
-    }
-    best.sort((a, b) => a.position - b.position);
-    // A closed row has one more interval: the last LED back to the first.
-    // Repairing only adjacent array entries left an unfilled arc at that seam.
-    if (route.closed && best.length > 1) {
-      let before = best.at(-1)!.position;
-      const after = best[0].position + route.length;
-      const minimumPitch = lengthMm + minimumGap;
-      const increment = Math.max(1, bodyWidthMm / 3);
-      for (let position = before + minimumPitch; position <= after - minimumPitch + 1e-6; position += increment) {
-        const wrapped = position % route.length;
-        const candidate = makeRectangle(route, wrapped, lengthMm, bodyWidthMm);
-        if (!candidate || !valid(candidate, best)) continue;
-        best.push({ position: wrapped, rectangle: candidate });
-        before = position;
-        position = before + minimumPitch - increment;
+        if (proposals.length > best.length) best = proposals;
+        if (best.length === slots) break;
       }
       best.sort((a, b) => a.position - b.position);
+      // A failed slot must not leave the surviving LEDs anchored to the old
+      // layout's end. Refit a complete, centered row for the count that fits,
+      // checking the same body clearance and spacing constraints as before.
+      if (!route.closed && best.length && !division.cornerBranch) {
+        let centered: Proposal[] | null = null;
+        for (let count = slots; count >= best.length && !centered; count--) {
+          const roomGap = count > 1 ? (route.length - count * lengthMm) / (count - 1) : 0;
+          const largestGap = Math.min(maximumGap, roomGap);
+          const gaps = count === 1 ? [0] : [desiredGap, (desiredGap + largestGap) / 2, largestGap];
+          for (const gap of gaps) {
+            if (count > 1 && (gap < minimumGap - 1e-6 || gap > maximumGap + 1e-6)) continue;
+            const pitch = lengthMm + gap;
+            const start = (route.length - (count - 1) * pitch) / 2;
+            const proposals: Proposal[] = [];
+            for (let slot = 0; slot < count; slot++) {
+              const position = start + slot * pitch;
+              if (!fitsGuide(position)) break;
+              const rectangle = makeRectangle(route, position, lengthMm, bodyWidthMm);
+              if (!rectangle || !valid(rectangle, proposals)) break;
+              proposals.push({ position, rectangle });
+            }
+            if (proposals.length === count) { centered = proposals; break; }
+          }
+        }
+        if (centered) best = centered;
+      }
+      // Fit closed rows as a whole ring. Independent slot shifts otherwise push
+      // accumulated spacing error into the seam, leaving a long empty arc.
+      if (route.closed && best.length) {
+        let ring: Proposal[] | null = null;
+        for (let count = slots; count >= best.length && !ring; count--) {
+          const ringPitch = route.length / count;
+          if (ringPitch - lengthMm > maximumGap + 1e-6) break;
+          for (let phase = 0; phase < 24 && !ring; phase++) {
+            const proposals: Proposal[] = [];
+            for (let slot = 0; slot < count; slot++) {
+              const position = (slot + phase / 24) * ringPitch;
+              const rectangle = makeRectangle(route, position, lengthMm, bodyWidthMm);
+              if (!rectangle || !valid(rectangle, proposals)) break;
+              proposals.push({ position, rectangle });
+            }
+            if (proposals.length === count) ring = proposals;
+          }
+        }
+        if (ring) best = ring;
+      }
+      // Repair a skipped slot where another physical body can bridge the gap.
+      for (let i = 1; i < best.length; i++) {
+        const gap = Math.max(rectangleGap(best[i - 1].rectangle, best[i].rectangle), best[i].position - best[i - 1].position - lengthMm);
+        if (gap <= maximumGap + 1e-5) continue;
+        const before = best[i - 1], after = best[i];
+        let repaired = false;
+        for (const [item, direction] of [[after, -1], [before, 1]] as const) {
+          const position = item.position + direction * (gap - maximumGap + 1);
+          if (!fitsGuide(position)) continue;
+          const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
+          if (!candidate || !valid(candidate, best.filter(other => other !== item))) continue;
+          item.position = position; item.rectangle = candidate;
+          if (Math.max(rectangleGap(before.rectangle, after.rectangle), after.position - before.position - lengthMm) <= maximumGap + 1e-5) { repaired = true; break; }
+        }
+        if (repaired) continue;
+        const positions = [(before.position + after.position) / 2, before.position + lengthMm + desiredGap, after.position - lengthMm - desiredGap];
+        for (let at = before.position + lengthMm + minimumGap; at <= after.position - lengthMm - minimumGap; at += Math.max(1, bodyWidthMm / 3)) positions.push(at);
+        for (const position of positions) {
+          if (!fitsGuide(position)) continue;
+          const candidate = makeRectangle(route, position, lengthMm, bodyWidthMm);
+          if (candidate && valid(candidate, best)) { best.splice(i, 0, { rectangle: candidate, position }); i--; break; }
+        }
+      }
+      best.sort((a, b) => a.position - b.position);
+      // A closed row has one more interval: the last LED back to the first.
+      // Repairing only adjacent array entries left an unfilled arc at that seam.
+      if (route.closed && best.length > 1) {
+        let before = best.at(-1)!.position;
+        const after = best[0].position + route.length;
+        const minimumPitch = lengthMm + minimumGap;
+        const increment = Math.max(1, bodyWidthMm / 3);
+        for (let position = before + minimumPitch; position <= after - minimumPitch + 1e-6; position += increment) {
+          const wrapped = position % route.length;
+          const candidate = makeRectangle(route, wrapped, lengthMm, bodyWidthMm);
+          if (!candidate || !valid(candidate, best)) continue;
+          best.push({ position: wrapped, rectangle: candidate });
+          before = position;
+          position = before + minimumPitch - increment;
+        }
+        best.sort((a, b) => a.position - b.position);
+      }
+      // Long recovered branches can lose one terminal LED to keep branch tips
+      // lighter. Short branches must retain
+      // both LEDs when only two physically fit; dropping one leaves them sparse.
+      omittedTip = division.coverageBranch && !route.closed && best.length > 2 ? 1 : 0;
+      if (omittedTip) best.pop();
     }
-    // Long recovered branches can lose one terminal LED to keep branch tips
-    // lighter. Short branches must retain
-    // both LEDs when only two physically fit; dropping one leaves them sparse.
-    const omittedTip = division.coverageBranch && !route.closed && best.length > 2 ? 1 : 0;
-    if (omittedTip) best.pop();
     stat.unplaced += Math.max(0, slots - best.length - omittedTip);
     const rowModules: LedPlacement[] = [];
     for (const [slot, proposal] of best.entries()) {

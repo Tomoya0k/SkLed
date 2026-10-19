@@ -68,6 +68,7 @@ Filtros físicos de colocación:
 - Los módulos no se pueden superponer. Se conserva entre cuerpos la separación mínima automática: **pigtail izquierdo + pigtail derecho − 1 cm**, nunca menor que cero.
 - La separación entre módulos no puede exceder la suma de ambos pigtails. Si la geometría obliga a dejar más espacio, SkLed marca un salto de fila para que no se confunda con una conexión físicamente alcanzable.
 - En una rama terminal recuperada hacia una esquina, se coloca como máximo un LED y solo si el cuerpo completo cabe.
+- Revisa también las puntas descartadas al podar el skeleton y los tramos centrales que quedaron sin LED. Busca una posición y orientación físicas para cubrirlos, incluso transversalmente en una punta plana. Puede desplazar módulos vecinos sobre sus propias guías para abrir espacio, conservando todos los módulos existentes, el contorno, los huecos y la separación mínima. Si no encuentra una distribución válida, conserva la anterior.
 
 Por eso el total puede ser menor que el número de espacios sugeridos por las guías: se cuentan solo los módulos que pasan las comprobaciones geométricas y de separación.
 

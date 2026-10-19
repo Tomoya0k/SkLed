@@ -11,6 +11,7 @@ import { composeSerpentGuides, singleLedPartitionIds } from './serpent-guides';
 import type { SerpentGuide, SerpentGuides } from './serpent-guides';
 import { filterSkeletonSpurs } from './skeleton-filter';
 import { recoverMissingCoverageGuides, restoreCoverageBranches } from './skeleton-coverage';
+import { repairCoverageLayout } from './coverage-layout';
 
 export interface LayoutResult { skeleton: SkeletonResult; sourceSkeleton: SkeletonResult; divisions: PartitionResult | null; serpentGuides: SerpentGuides | null; distribution: LedDistributionResult | null }
 export interface LayoutPlacement { config: PartitionConfig; measurements: ModuleMeasurements | null; options: PlacementOptions }
@@ -69,6 +70,24 @@ self.onmessage = (event: MessageEvent<LayoutInput>) => {
         }
         break;
       }
+      const repaired = repairCoverageLayout(sourceSkeleton, skeleton, serpentGuides, distribution,
+        placement.measurements, placement.options);
+      if (repaired) {
+        serpentGuides = repaired.guides;
+        distribution = distributeLeds(model, serpentGuides, placement.measurements, physicalSize.widthMm, physicalSize.heightMm,
+          { ...placement.options, positionsByGuideMm: repaired.positionsByGuideMm });
+        // Show the source references used for the recovered tip coverage, too.
+        const recoveredIds = new Set(repaired.restoredEdges.map(edge => edge.id));
+        const existingNodes = new Set(skeleton.nodes.map(node => node.id));
+        const recoveredNodes = new Set(repaired.restoredEdges.flatMap(edge => [edge.from, edge.to]));
+        skeleton = { ...skeleton,
+          edges: [...skeleton.edges, ...repaired.restoredEdges.filter((edge, i, edges) => edges.findIndex(other => other.id === edge.id) === i)
+            .map(edge => ({ ...edge, coverageBranch: true }))],
+          nodes: [...skeleton.nodes, ...sourceSkeleton.nodes.filter(node => !existingNodes.has(node.id) && recoveredNodes.has(node.id))],
+          warnings: [...skeleton.warnings, `${recoveredIds.size} referencia(s) terminal(es) recuperada(s) para la cobertura LED.`] };
+      }
+      const occupied = new Set(distribution.modules.map(module => module.divisionId));
+      serpentGuides = { ...serpentGuides, paths: serpentGuides.paths.filter(path => !path.cornerBranch || occupied.has(path.id)) };
     }
     self.postMessage({ result: { skeleton, sourceSkeleton, divisions, serpentGuides, distribution } satisfies LayoutResult });
   } catch (error) {

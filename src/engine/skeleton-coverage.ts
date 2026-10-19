@@ -157,6 +157,9 @@ export function recoverMissingCoverageGuides(skeleton: SkeletonResult, guides: S
   const added: SerpentGuide[] = [];
   for (const edge of skeleton.edges) {
     if (edge.closed) continue;
+    // A recovered corner already reserves one body on this source branch.
+    // A second tip guide would compete with that same reservation.
+    if (edge.cornerBranch && edgesWithModules.has(edge.id)) continue;
     let recoveredTip = false;
     for (const tipId of [edge.from, edge.to].filter((id): id is string => !!id && nodes.get(id)?.kind === 'end')) {
       const id = `${edge.id}-tip-led-${tipId}`;
