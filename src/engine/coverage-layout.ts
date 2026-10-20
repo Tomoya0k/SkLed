@@ -86,8 +86,8 @@ export function repairCoverageLayout(source: SkeletonResult, skeleton: SkeletonR
   distribution: LedDistributionResult, measurements: ModuleMeasurements, options: PlacementOptions): CoverageLayout | null {
   if (skeleton.units !== 'mm' || options.independentPaths) return null;
   const { lengthMm: length, widthMm: width } = measurements;
-  const gap = Math.max(options.bodyGapMm ?? 0, options.minimumGapMm ?? 0,
-    minimumPigtailSpacingMm(measurements.leftPigtailMm, measurements.rightPigtailMm));
+  const gap = Math.max(options.bodyGapMm ?? 0, options.flexibleSpacing ? options.minimumGapMm ?? 10 :
+    Math.max(options.minimumGapMm ?? 0, minimumPigtailSpacingMm(measurements.leftPigtailMm, measurements.rightPigtailMm)));
   const clearance = options.edgeMarginMm ?? Math.min(0.2, width * 0.05);
   const paths = new Map(guides.paths.map(guide => [guide.id, guide]));
   let placements: Placement[] = [];

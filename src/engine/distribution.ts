@@ -43,6 +43,8 @@ export interface LedDistributionResult {
 export interface PlacementOptions {
   minimumGapMm?: number;
   maximumGapMm?: number;
+  /** Allow a user-selected spacing floor below the pigtail slack target. */
+  flexibleSpacing?: boolean;
   bodyGapMm?: number;
   edgeMarginMm?: number;
   independentPaths?: boolean;
@@ -54,6 +56,7 @@ export interface PhysicalScale { x: number; y: number }
 export interface Polyline { points: Point[]; distances: number[]; length: number; closed: boolean }
 export interface Region { outer: Point[]; inner: Point[] | null; holes?: Point[][] }
 export interface Rectangle { center: Point; corners: [Point, Point, Point, Point]; tangent: Point; normal: Point; halfLength: number; halfWidth: number }
+interface Proposal { rectangle: Rectangle; position: number }
 
 export const toMm = (point: Point, scale: PhysicalScale): Point => ({ x: point.x * scale.x, y: point.y * scale.y });
 export const toSvg = (point: Point, scale: PhysicalScale): Point => ({ x: point.x / scale.x, y: point.y / scale.y });
@@ -199,6 +202,45 @@ export function rectangleGap(a: Rectangle, b: Rectangle): number {
   return gap;
 }
 
+/** Search actual feasible poses instead of insisting on one periodic pitch.
+ * Curves can consume more spacing than straight spans. Both traversal orders
+ * and several seams prevent the first body from dictating the entire row. */
+function flexibleRow(route: Polyline, length: number, width: number, gap: number, baseline: Proposal[],
+  fitsGuide: (position: number) => boolean, fitsBody: (body: Rectangle) => boolean,
+  conflicts: (a: Rectangle, b: Rectangle) => boolean): Proposal[] {
+  const step = Math.max(0.75, Math.min(3, width / 4, length / 16), route.length / 1600);
+  const positions = new Set(baseline.map(item => item.position));
+  for (let at = route.closed ? 0 : length / 2; at <= route.length - (route.closed ? 0 : length / 2); at += step) positions.add(at);
+  const candidates = [...positions].sort((a, b) => a - b).flatMap(position => {
+    if (!fitsGuide(position)) return [];
+    const rectangle = makeRectangle(route, position, length, width);
+    return rectangle && fitsBody(rectangle) ? [{ position, rectangle }] : [];
+  });
+  const darkSpan = (row: Proposal[]) => {
+    if (!row.length) return Infinity;
+    const sorted = [...row].sort((a, b) => a.position - b.position);
+    let largest = route.closed ? route.length + sorted[0].position - sorted.at(-1)!.position - length :
+      Math.max(sorted[0].position - length / 2, route.length - sorted.at(-1)!.position - length / 2);
+    for (let i = 1; i < sorted.length; i++) largest = Math.max(largest, sorted[i].position - sorted[i - 1].position - length);
+    return largest;
+  };
+  let best = baseline, darkest = darkSpan(best);
+  for (const reversed of [false, true]) {
+    const ordered = reversed ? [...candidates].reverse() : candidates;
+    for (let phase = 0; phase < 12; phase++) {
+      const start = route.closed ? Math.floor(ordered.length * phase / 12) :
+        ordered.findIndex(item => Math.abs(item.position - (reversed ? route.length - length / 2 : length / 2)) >= (length + gap) * phase / 12);
+      if (start < 0) continue;
+      const scan = route.closed ? [...ordered.slice(start), ...ordered.slice(0, start)] : ordered.slice(start);
+      const row: Proposal[] = [];
+      for (const candidate of scan) if (!row.some(other => conflicts(candidate.rectangle, other.rectangle))) row.push(candidate);
+      const dark = darkSpan(row);
+      if (row.length > best.length || (row.length === best.length && dark < darkest)) { best = row; darkest = dark; }
+    }
+  }
+  return [...best].sort((a, b) => a.position - b.position);
+}
+
 /** Provisional placement on existing division paths; no electrical connection is inferred. */
 export function distributeLeds(model: SvgModel, divisions: DivisionResult, measurements: ModuleMeasurements, widthMm: number, heightMm: number, options: PlacementOptions = {}): LedDistributionResult {
   const geometry = createModuleGeometry(measurements);
@@ -221,12 +263,16 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
   const rowBreaks: NonNullable<LedDistributionResult['rowBreaks']> = [];
   const routeRuns: NonNullable<LedDistributionResult['routeRuns']> = [];
   const lengthMm = geometry.body.lengthMm, bodyWidthMm = geometry.widthMm;
-  const minimumGap = Math.max(minimumPigtailSpacingMm(geometry.leftPigtail.lengthMm, geometry.rightPigtail.lengthMm), options.minimumGapMm ?? 0);
+  const minimumGap = options.flexibleSpacing ? options.minimumGapMm ?? 10 :
+    Math.max(minimumPigtailSpacingMm(geometry.leftPigtail.lengthMm, geometry.rightPigtail.lengthMm), options.minimumGapMm ?? 0);
   const maximumGap = options.maximumGapMm ?? Infinity;
   const bodyGap = options.bodyGapMm ?? 0;
   const clearance = options.edgeMarginMm ?? Math.min(0.2, bodyWidthMm * 0.05);
   if (![minimumGap, bodyGap, clearance].every(n => Number.isFinite(n) && n >= 0) || !(maximumGap >= minimumGap)) throw new Error('Revisa la separación mínima, máxima y el margen de los módulos.');
   const desiredGap = minimumGap;
+  const requiredGap = Math.max(bodyGap, minimumGap), nearby = Math.hypot(lengthMm, bodyWidthMm) + requiredGap;
+  const conflicts = (a: Rectangle, b: Rectangle) => distance(a.center, b.center) <= nearby &&
+    (overlaps(a, b) || rectangleGap(a, b) + 1e-5 < requiredGap);
   // Reserve junction bridges before their arms, then corner LEDs before lanes.
   // Otherwise an arm's endpoint can block a complete row across the bridge.
   const lane = (path: DivisionPath) => (path as DivisionPath & { lane?: number }).lane;
@@ -249,11 +295,9 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
     const fitsGuide = (position: number) => route.closed || (division.bodyFiltered || candidateGuide
       ? position >= lengthMm / 2 - 1e-6 && position <= route.length - lengthMm / 2 + 1e-6
       : position >= 0 && position <= route.length);
-    type Proposal = { rectangle: Rectangle; position: number };
     const valid = (candidate: Rectangle, local: Proposal[]) => insideRegion(candidate, region, clearance) &&
       !placed.some(other => (!options.independentPaths || other.division.id === division.id) &&
-        (overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < Math.max(bodyGap, minimumGap))) &&
-      !local.some(other => overlaps(candidate, other.rectangle) || rectangleGap(candidate, other.rectangle) + 1e-5 < Math.max(bodyGap, minimumGap));
+        conflicts(candidate, other.rectangle)) && !local.some(other => conflicts(candidate, other.rectangle));
     let best: Proposal[] = [];
     const planned = options.positionsByGuideMm?.[division.id];
     let omittedTip = 0;
@@ -371,6 +415,8 @@ export function distributeLeds(model: SvgModel, divisions: DivisionResult, measu
         }
         best.sort((a, b) => a.position - b.position);
       }
+      if (options.flexibleSpacing && !division.cornerBranch) best = flexibleRow(route, lengthMm, bodyWidthMm,
+        requiredGap, best, fitsGuide, body => valid(body, []), conflicts);
       // Long recovered branches can lose one terminal LED to keep branch tips
       // lighter. Short branches must retain
       // both LEDs when only two physically fit; dropping one leaves them sparse.

@@ -126,7 +126,57 @@ export function planSerpent(model: SvgModel, divisions: DivisionResult, distribu
     }
     if (!improved) break;
   }
-  const ordered = blocks.flat();
+  let ordered = blocks.flat();
+  // Several narrow border fragments can each hold just one body. A fixed
+  // greedy start may then strand a fragment at the far end of the piece.
+  // Solve these small sets exactly, including terminal orientation and free
+  // endpoints. Larger rows retain their guide order and the bounded heuristic.
+  if (options.allowBridges && modules.length > 2 && modules.length <= 10 &&
+    !partitionGroups.length && [...groups.values()].every(group => group.length === 1)) {
+    const count = modules.length, full = (1 << count) - 1;
+    const scores = new Float64Array((full + 1) * count * 2).fill(Infinity);
+    const preceding = new Int32Array(scores.length).fill(-1);
+    const index = (mask: number, last: number, side: number) => (mask * count + last) * 2 + side;
+    const fixedStart = options.startId === start.id ? start : null;
+    const transitions = modules.map(a => sides.map(entry => modules.map(b => sides.map(next => a === b ? Infinity :
+      connectionCost(a, b, router(a, opposite(entry), b, next))))));
+    modules.forEach((module, i) => {
+      if ((fixedStart && module !== fixedStart) || module === end) return;
+      sides.forEach((side, entry) => {
+        if (!fixedStart || !options.startSide || side === options.startSide) scores[index(1 << i, i, entry)] = 0;
+      });
+    });
+    for (let mask = 1; mask <= full; mask++) for (let last = 0; last < count; last++) {
+      if (!(mask & (1 << last))) continue;
+      for (let entry = 0; entry < 2; entry++) {
+        const current = index(mask, last, entry), cost = scores[current];
+        if (!Number.isFinite(cost)) continue;
+        for (let next = 0; next < count; next++) {
+          if (mask & (1 << next)) continue;
+          const nextMask = mask | (1 << next);
+          if (modules[next] === end && nextMask !== full) continue;
+          for (let side = 0; side < 2; side++) {
+            const at = index(nextMask, next, side), proposed = cost + transitions[last][entry][next][side];
+            if (proposed < scores[at]) { scores[at] = proposed; preceding[at] = current; }
+          }
+        }
+      }
+    }
+    let lastState = -1, exactCost = bestCost;
+    modules.forEach((module, last) => {
+      if (end && module !== end) return;
+      sides.forEach((entry, side) => {
+        if (end && options.endSide && opposite(entry) !== options.endSide) return;
+        const at = index(full, last, side);
+        if (scores[at] + 1e-6 < exactCost) { exactCost = scores[at]; lastState = at; }
+      });
+    });
+    if (lastState >= 0) {
+      const exact: LedPlacement[] = [];
+      for (let at = lastState; at >= 0; at = preceding[at]) exact.unshift(modules[Math.floor(at / 2) % count]);
+      ordered = exact;
+    }
+  }
   const fixedStartSide = options.startId === ordered[0].id ? options.startSide : null;
   const fixedEndSide = options.endId === ordered.at(-1)!.id ? options.endSide : null;
   if (ordered.length === 1 && fixedStartSide && fixedEndSide === fixedStartSide) throw new Error('Inicio y salida deben usar extremos opuestos del LED.');

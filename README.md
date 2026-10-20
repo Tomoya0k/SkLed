@@ -66,7 +66,7 @@ Coloca los cuerpos LED sobre las guías combinadas del recorrido serpiente. Para
 Filtros físicos de colocación:
 
 - El cuerpo completo debe caber longitudinal y transversalmente dentro de la figura, con un pequeño margen al borde, sin invadir huecos.
-- Los módulos no se pueden superponer. Se conserva entre cuerpos la separación mínima automática: **pigtail izquierdo + pigtail derecho − 1 cm**, nunca menor que cero.
+- Los módulos no se pueden superponer. En el acomodo completo se conserva entre cuerpos la separación mínima automática: **pigtail izquierdo + pigtail derecho − 1 cm**, nunca menor que cero. En **SOLO BORDE**, la separación es variable y respeta el mínimo editable de ese modo.
 - La separación entre módulos no puede exceder la suma de ambos pigtails. Si la geometría obliga a dejar más espacio, SkLed marca un salto de fila para que no se confunda con una conexión físicamente alcanzable.
 - En una rama terminal recuperada hacia una esquina, se coloca como máximo un LED y solo si el cuerpo completo cabe.
 - Revisa también las puntas descartadas al podar el skeleton y los tramos centrales que quedaron sin LED. Busca una posición y orientación físicas para cubrirlos, incluso transversalmente en una punta plana. Puede desplazar módulos vecinos sobre sus propias guías para abrir espacio, conservando todos los módulos existentes, el contorno, los huecos y la separación mínima. Si no encuentra una distribución válida, conserva la anterior.
@@ -77,9 +77,15 @@ Por eso el total puede ser menor que el número de espacios sugeridos por las gu
 
 #### Modo SOLO BORDE
 
-El botón **SOLO BORDE** recalcula los módulos para iluminación indirecta: genera un único trazado interior paralelo al contorno exterior de cada pieza rellena. Calcula el retiro en milímetros según el tamaño del cuerpo LED y el espacio que necesita al girar en las curvas. Los huecos limitan el espacio disponible y no generan filas adicionales.
+El botón **SOLO BORDE** recalcula los módulos para iluminación indirecta: genera una fila interior paralela al contorno exterior de cada pieza rellena. Calcula el retiro en milímetros según el tamaño del cuerpo LED y el espacio que necesita al girar en las curvas. Los huecos limitan el espacio disponible y no generan filas adicionales.
 
-Este modo conserva las comprobaciones del cuerpo completo, los huecos, las colisiones y la separación automática de pigtails. Si un estrechamiento divide el contorno retirado, conserva el trazado principal y muestra un aviso; si no cabe ningún módulo, también lo indica. El valor de **Partidas** se mantiene guardado y vuelve a aplicarse al desactivar el botón.
+**Separación mínima en SOLO BORDE** empieza en **1 cm** y se puede ajustar. El motor busca posiciones factibles a lo largo de cada fragmento y permite que la separación cambie en las curvas, en vez de exigir un paso uniforme. Compara ambos sentidos y distintos puntos de inicio para mejorar la cobertura. El mínimo se mide entre los cuerpos completos, no entre sus centros, y nunca permite superposiciones.
+
+Si un estrechamiento divide el contorno retirado, conserva **todos los fragmentos donde cabe un LED** y muestra un aviso. Así una letra o lóbulo pequeño no desaparece por quedar fuera del fragmento principal. Si no cabe ningún módulo, también lo indica. El valor de **Partidas** y la separación automática del acomodo completo vuelven a aplicarse al desactivar el botón.
+
+Reducir la separación no aumenta el alcance de los pigtails: las conexiones siguen comprobando las longitudes reales, los huecos y las colisiones. Los tramos que no alcanzan requieren cable adicional o quedan pendientes. La guía del borde puede tener fragmentos separados; las conexiones eléctricas se revisan por separado.
+
+Cuando una pieza pequeña queda repartida en fragmentos de un solo LED y se permite cable adicional, el planificador compara los órdenes de conexión y las orientaciones de los terminales para evitar saltos innecesarios y reducir el cable. Mantiene los extremos elegidos y usa cada LED una sola vez.
 
 El retiro del contorno usa `clipper-lib` 6.4.2, bajo Boost Software License 1.0 ([documentación del proyecto](https://github.com/junmer/clipper-lib)).
 

@@ -32,8 +32,8 @@ function insetContours(region: GeometryRegion, insetMm: number): Point[][] {
 const perimeter = (points: Point[]) => points.reduce((length, point, i) =>
   length + pointDistance(point, points[(i + 1) % points.length]), 0);
 
-function borderGuide(region: GeometryRegion, physical: Point[], scale: GeometryScale): SerpentGuide {
-  const id = `border-${region.id}`, points = physical.map(point => unscalePoint(point, scale));
+function borderGuide(region: GeometryRegion, physical: Point[], scale: GeometryScale, fragment = 0): SerpentGuide {
+  const id = `border-${region.id}${fragment ? `-fragment-${fragment}` : ''}`, points = physical.map(point => unscalePoint(point, scale));
   return { id, figureId: region.figureId, regionId: region.id, outerContourId: region.outerContourId,
     innerContourId: '', index: 0, fraction: 0, points, d: pathData(points, true), closed: true,
     bodyFiltered: true, sourceEdgeId: id, sourceRange: [0, perimeter(physical)], lane: 0, origin: 'border' };
@@ -41,7 +41,8 @@ function borderGuide(region: GeometryRegion, physical: Point[], scale: GeometryS
 
 /** One inset exterior trace per filled piece, calculated entirely from its
  * original boundary and holes. The medial graph and coverage branches do not
- * participate in this arrangement. All final bodies use the usual fit checks. */
+ * participate in this arrangement. Narrow necks may split that same exterior
+ * row into useful fragments; none of the hole loops become extra rows. */
 export function generateBorderLayout(model: SvgModel, geometry: { regions: GeometryRegion[]; warnings: string[] },
   size: { widthMm: number; heightMm: number }, measurements: ModuleMeasurements | null,
   options: PlacementOptions): { guides: SerpentGuides; distribution: LedDistributionResult | null } {
@@ -56,22 +57,25 @@ export function generateBorderLayout(model: SvgModel, geometry: { regions: Geome
   const retreats = measurements ? [0, 0.25, 0.5, 1, 1.5, 2].map(fraction => baseInset + extraStep * fraction) : [baseInset];
   for (const region of geometry.regions) {
     const physical = scaleRegion(region, scale);
-    let best: { guide: SerpentGuide; count: number; split: boolean } | null = null;
+    let best: { paths: SerpentGuide[]; count: number; split: boolean } | null = null;
     for (const inset of retreats) {
       const loops = insetContours(physical, inset).sort((a, b) => perimeter(b) - perimeter(a));
       if (!loops.length) continue;
-      const guide = borderGuide(region, loops[0], scale);
-      const count = measurements ? distributeLeds(model, { ...guides, paths: [guide] }, measurements,
-        size.widthMm, size.heightMm, options).total : 0;
-      if (!best || count > best.count) best = { guide, count, split: loops.length > 1 };
+      const paths = loops.map((loop, i) => borderGuide(region, loop, scale, i));
+      const distribution = measurements ? distributeLeds(model, { ...guides, paths }, measurements,
+        size.widthMm, size.heightMm, options) : null;
+      const occupied = new Set(distribution?.modules.map(module => module.divisionId));
+      const useful = distribution ? paths.filter(path => occupied.has(path.id)) : paths;
+      const count = distribution?.total ?? 0;
+      if (!best || count > best.count) best = { paths: useful, count, split: loops.length > 1 };
     }
     const name = model.figures.find(figure => figure.id === region.figureId)?.name ?? region.figureId;
     if (!best || (measurements && !best.count)) {
       guides.warnings.push(`${name}: no cabe un módulo LED sobre el recorrido del borde con estas medidas.`);
       continue;
     }
-    guides.paths.push(best.guide);
-    if (best.split) guides.warnings.push(`${name}: las zonas estrechas separan el recorrido del borde; se conserva el trazado principal.`);
+    guides.paths.push(...best.paths);
+    if (best.split) guides.warnings.push(`${name}: las zonas estrechas separan la fila del borde; se conservan ${best.paths.length} fragmento(s) útil(es). Las conexiones se comprueban por separado.`);
   }
   return { guides, distribution: measurements ? distributeLeds(model, guides, measurements,
     size.widthMm, size.heightMm, options) : null };

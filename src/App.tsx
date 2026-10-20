@@ -137,6 +137,7 @@ export default function App() {
   const [showSerpent, setShowSerpent] = useState(false);
   const [showPigtails, setShowPigtails] = useState(false);
   const [preferBorder, setPreferBorder] = useState(false);
+  const [borderMinimumGap, setBorderMinimumGap] = useState('1');
   const [serpents, setSerpents] = useState<SerpentResult[]>([]);
   const [serpentPlanning, setSerpentPlanning] = useState(false);
   const [layout, setLayout] = useState<LayoutResult | null>(null);
@@ -172,6 +173,8 @@ export default function App() {
   const pigtailReachCm = pigtailsValid ? Number(leftPigtail) + Number(rightPigtail) : null;
   const pigtailReachMm = pigtailReachCm === null ? null : mm(String(pigtailReachCm));
   const minimumPigtailGapMm = pigtailsValid ? minimumPigtailSpacingMm(mm(leftPigtail), mm(rightPigtail)) : null;
+  const borderGapValid = borderMinimumGap !== '' && Number.isFinite(Number(borderMinimumGap)) && Number(borderMinimumGap) >= 0;
+  const spacingValid = !preferBorder || borderGapValid;
   const partitionInputValid = minimumSectionWidth !== '' && Number.isFinite(Number(minimumSectionWidth)) && Number(minimumSectionWidth) >= 0;
   const moduleGeometry = useMemo(() => {
     if ([moduleLength, moduleWidth, leftPigtail, rightPigtail].some(value => value === '')) return null;
@@ -183,7 +186,7 @@ export default function App() {
     } catch { return null; }
   }, [moduleLength, moduleWidth, leftPigtail, rightPigtail]);
   const physicalSizeReady = svgWidth !== '' && svgHeight !== '' && mm(svgWidth) > 0 && mm(svgHeight) > 0 && Number.isFinite(mm(svgWidth)) && Number.isFinite(mm(svgHeight));
-  const canCountLeds = !!filename && physicalSizeReady && (preferBorder || partitionInputValid) && !!moduleGeometry;
+  const canCountLeds = !!filename && physicalSizeReady && spacingValid && (preferBorder || partitionInputValid) && !!moduleGeometry;
   const needDistribution = showLedDistribution || showPigtails || canCountLeds;
   const needPlacement = showLedRoutes || showSerpent || needDistribution;
   const needSkeleton = !!filename && (showSkeleton || needPlacement);
@@ -212,12 +215,14 @@ export default function App() {
   const dimensionWidth = physicalSizeReady ? dimensionBounds.width * Number(svgWidth) / model.viewBox.width : dimensionBounds.width;
   const dimensionHeight = physicalSizeReady ? dimensionBounds.height * Number(svgHeight) / model.viewBox.height : dimensionBounds.height;
   const dimensionUnit = physicalSizeReady ? 'cm' : 'u SVG';
-  const placement = useMemo((): LayoutPlacement | null => needPlacement && (preferBorder || partitionInputValid) && physicalSizeReady ? {
+  const placement = useMemo((): LayoutPlacement | null => needPlacement && spacingValid && (preferBorder || partitionInputValid) && physicalSizeReady ? {
     mode: preferBorder ? 'border' : 'full',
     config: { minimumSectionWidthMm: mm(minimumSectionWidth) },
     measurements: moduleGeometry ? { lengthMm: mm(moduleLength), widthMm: mm(moduleWidth), leftPigtailMm: mm(leftPigtail), rightPigtailMm: mm(rightPigtail) } : null,
-    options: { minimumGapMm: minimumPigtailGapMm ?? 0, maximumGapMm: pigtailReachMm ?? 0 },
-  } : null, [needPlacement, needDistribution, preferBorder, partitionInputValid, physicalSizeReady, moduleGeometry, moduleLength, moduleWidth, leftPigtail, rightPigtail, minimumSectionWidth, minimumPigtailGapMm, pigtailReachMm]);
+    options: { flexibleSpacing: preferBorder,
+      minimumGapMm: preferBorder ? mm(borderMinimumGap) : minimumPigtailGapMm ?? 0,
+      maximumGapMm: preferBorder ? Math.max(mm(borderMinimumGap), pigtailReachMm ?? 0) : pigtailReachMm ?? 0 },
+  } : null, [needPlacement, needDistribution, preferBorder, spacingValid, borderMinimumGap, partitionInputValid, physicalSizeReady, moduleGeometry, moduleLength, moduleWidth, leftPigtail, rightPigtail, minimumSectionWidth, minimumPigtailGapMm, pigtailReachMm]);
   const physicalWidth = physicalSizeReady ? mm(svgWidth) : null, physicalHeight = physicalSizeReady ? mm(svgHeight) : null;
   useEffect(() => {
     if (!needSkeleton) { setLayout(null); setLayoutPlanning(false); return; }
@@ -410,8 +415,13 @@ export default function App() {
           <div className="section-heading"><h2>Pigtails y conexiones</h2></div>
           <label className="physical-filter"><input type="checkbox" checked={avoidModuleCollisions} onChange={event => setAvoidModuleCollisions(event.target.checked)} />Descartar conexiones que chocan con módulos LED</label>
           <label className="physical-filter"><input type="checkbox" checked={allowBridges} onChange={event => setAllowBridges(event.target.checked)} />Completar saltos con cable adicional</label>
-          <label className="minimum-gap-field">Separación mínima automática (pigtails − 1 cm) <span><output aria-label="Separación mínima automática entre módulos">{minimumPigtailGapMm === null ? '—' : formatCm(minimumPigtailGapMm)}</output><small>cm</small></span></label>
-          <small className="spacing-hint">Los módulos con menos separación se omiten del recorrido.</small>
+          {preferBorder ? <>
+            <label className="minimum-gap-field">Separación mínima en SOLO BORDE <span><input type="number" min="0" step="0.5" inputMode="decimal" aria-label="Separación mínima en SOLO BORDE" value={borderMinimumGap} onChange={event => setBorderMinimumGap(event.target.value)} /><small>cm</small></span></label>
+            <small className="spacing-hint">La separación varía en cada curva desde este mínimo. Alcance de pigtails: {pigtailReachMm === null ? '—' : formatCm(pigtailReachMm)} cm. Los saltos mayores necesitan cable adicional.</small>
+          </> : <>
+            <label className="minimum-gap-field">Separación mínima automática (pigtails − 1 cm) <span><output aria-label="Separación mínima automática entre módulos">{minimumPigtailGapMm === null ? '—' : formatCm(minimumPigtailGapMm)}</output><small>cm</small></span></label>
+            <small className="spacing-hint">Los módulos con menos separación se omiten del recorrido.</small>
+          </>}
         </section>
 
         <section className="panel-section module-section">
@@ -451,7 +461,7 @@ export default function App() {
             </button>
           </div>
         </div>
-        {preferBorder && <p className="border-mode-hint">Iluminación indirecta · Una sola fila junto al contorno exterior de cada pieza. El retiro se adapta al tamaño del módulo.</p>}
+        {preferBorder && <p className="border-mode-hint">Iluminación indirecta · Fila junto al contorno exterior con separación variable. Los estrechamientos conservan todos los fragmentos donde cabe un LED.</p>}
         {loadingLabel && <div className="loading-indicator" role="status">
           <span>{loadingLabel}</span>
           <div className="loading-track" role="progressbar" aria-label={loadingLabel} aria-valuetext="En curso"><span /></div>
@@ -459,6 +469,7 @@ export default function App() {
         {filename && (showSkeleton || needPlacement) && <div className="geometry-status">
           {showSkeleton && skeleton?.units === 'svg' && <span>Skeleton en unidades SVG · indica las medidas físicas para Partidas.</span>}
           {needPlacement && (!physicalSizeReady ? <span>Indica ancho y alto del SVG en cm.</span> : !preferBorder && !partitionInputValid ? <span>Revisa el ancho mínimo local.</span> : needDistribution && !moduleGeometry ? <span>Completa largo, ancho y ambos pigtails del módulo.</span> : null)}
+          {preferBorder && !borderGapValid && <span>Indica una separación mínima válida, mayor o igual a cero.</span>}
           {geometryWarnings.length > 0 && <details className="division-hint"><summary>{geometryWarnings.length} aviso(s) de geometría</summary><ul>{geometryWarnings.map(warning => <li key={warning}>{measurementText(warning)}</li>)}</ul></details>}
           {!!ledDistribution?.rowBreaks?.length && !(showPigtails && allowBridges && serpents.length) && <span>{ledDistribution.rowBreaks.length} tramo(s) de fila superan el alcance de los pigtails; las guías quedan separadas.</span>}
           {showPigtails && serpents.length > 0 && <span>Recorrido: {routedModules.size} LED en {serpents.length} pieza(s) · {serpentBreakCount === 0 ? 'sin saltos pendientes' : `${serpentBreakCount} salto(s) pendiente(s)`}. Entrada verde; salida rosa. Los números y flechas indican el orden de conexión.</span>}
